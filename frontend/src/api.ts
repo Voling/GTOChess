@@ -27,6 +27,67 @@ export interface OpeningFamily {
   slot: number;
 }
 
+export interface AuthStatus {
+  connected: boolean;
+  source: "env" | "oauth" | null;
+  username: string | null;
+  export_rate: number;
+}
+
+export interface ImportProgress {
+  username: string;
+  exported: number;
+  usable: number;
+  skipped: number;
+  limit: number | null;
+  rate: number;
+  eta_seconds: number | null;
+}
+
+export interface ImportResult {
+  username: string;
+  exported: number;
+  usable: number;
+  seconds: number;
+  authenticated: boolean;
+}
+
+export interface ImportJob {
+  job_id: string;
+  username: string;
+  state: "queued" | "running" | "done" | "failed";
+  progress: ImportProgress | null;
+  result: ImportResult | null;
+  error: string | null;
+}
+
+export function fetchAuthStatus(): Promise<AuthStatus> {
+  return get<AuthStatus>("/api/auth/lichess");
+}
+
+export function startAuth(): Promise<{ authorize_url: string; state: string }> {
+  return post<{ authorize_url: string; state: string }>("/api/auth/lichess/start");
+}
+
+export function completeAuth(code: string, state: string): Promise<AuthStatus> {
+  const params = new URLSearchParams({ code, state });
+  return post<AuthStatus>(`/api/auth/lichess/callback?${params}`);
+}
+
+export async function disconnectAuth(): Promise<void> {
+  await fetch("/api/auth/lichess", { method: "DELETE" });
+}
+
+export function startImport(username: string, maxGames?: number): Promise<ImportJob> {
+  const params = new URLSearchParams(maxGames ? { max_games: String(maxGames) } : {});
+  return post<ImportJob>(`/api/players/${encodeURIComponent(username)}/import?${params}`);
+}
+
+export function fetchImportJob(jobId: string, username: string): Promise<ImportJob> {
+  const params = new URLSearchParams({ username });
+  return get<ImportJob>(`/api/imports/${jobId}?${params}`);
+}
+
 export type MoveQuality = "??" | "?" | "?!" | "sound";
 
 export interface MoveAnnotation {
@@ -126,8 +187,8 @@ function shapeParams(query: GraphQuery): URLSearchParams {
   });
 }
 
-async function get<T>(path: string): Promise<T> {
-  const response = await fetch(path);
+async function send<T>(path: string, method: string): Promise<T> {
+  const response = await fetch(path, { method });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({ detail: response.statusText }));
     throw new GraphError(
@@ -136,6 +197,14 @@ async function get<T>(path: string): Promise<T> {
     );
   }
   return response.json() as Promise<T>;
+}
+
+function get<T>(path: string): Promise<T> {
+  return send<T>(path, "GET");
+}
+
+function post<T>(path: string): Promise<T> {
+  return send<T>(path, "POST");
 }
 
 export function fetchGraph(query: GraphQuery): Promise<RepertoireGraph> {

@@ -1,19 +1,28 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
+  completeAuth,
+  disconnectAuth,
   fetchAnnotations,
+  fetchAuthStatus,
   fetchExplanation,
   fetchGraph,
+  fetchImportJob,
   GraphError,
   startAnnotation,
+  startAuth,
+  startImport,
+  type AuthStatus,
   type Explanation,
   type GraphQuery,
+  type ImportJob,
   type MoveAnnotation,
   type RepertoireGraph,
   type Side,
 } from "./api";
 import { slotIndex } from "./families";
 import { pathTo, placeRadial, walk, type PlacedNode } from "./layout";
+import AccountPanel from "./components/AccountPanel.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
@@ -42,6 +51,13 @@ const loading = ref(false);
 const hovered = ref<string | null>(null);
 const pinned = ref<string | null>(null);
 const highlighted = ref<string | null>(null);
+
+const authStatus = ref<AuthStatus | null>(null);
+const accountOpen = ref(false);
+const authorizeUrl = ref<string | null>(null);
+const authBusy = ref(false);
+const authError = ref<string | null>(null);
+const importJob = ref<ImportJob | null>(null);
 
 const annotations = ref<Map<string, MoveAnnotation>>(new Map());
 const annotationState = ref<"missing" | "running" | "ready">("missing");
@@ -191,6 +207,98 @@ function scheduleExplain() {
 
 watch(pinned, scheduleExplain);
 
+let importPoll: number | undefined;
+
+async function refreshAuth() {
+  try {
+    authStatus.value = await fetchAuthStatus();
+  } catch {
+    authStatus.value = null;
+  }
+}
+
+function openAccount() {
+  accountOpen.value = true;
+  authError.value = null;
+  refreshAuth();
+}
+
+function closeAccount() {
+  accountOpen.value = false;
+  authorizeUrl.value = null;
+  authError.value = null;
+}
+
+async function connect() {
+  authBusy.value = true;
+  authError.value = null;
+  try {
+    authorizeUrl.value = (await startAuth()).authorize_url;
+  } catch (exc) {
+    authError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    authBusy.value = false;
+  }
+}
+
+async function disconnect() {
+  await disconnectAuth();
+  authorizeUrl.value = null;
+  await refreshAuth();
+}
+
+async function pollImport(jobId: string) {
+  try {
+    const job = await fetchImportJob(jobId, username.value);
+    importJob.value = job;
+    if (job.state === "queued" || job.state === "running") {
+      importPoll = window.setTimeout(() => pollImport(jobId), 2000);
+      return;
+    }
+    if (job.state === "failed") authError.value = job.error;
+    if (job.state === "done") {
+      tuned.clear();
+      minVolume.value = 2;
+      load();
+    }
+  } catch {
+    importPoll = window.setTimeout(() => pollImport(jobId), 4000);
+  }
+}
+
+async function runImport() {
+  authBusy.value = true;
+  authError.value = null;
+  try {
+    const job = await startImport(username.value);
+    importJob.value = job;
+    importPoll = window.setTimeout(() => pollImport(job.job_id), 1500);
+  } catch (exc) {
+    authError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    authBusy.value = false;
+  }
+}
+
+async function finishSignIn() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  const state = params.get("state");
+  if (!code || !state) return;
+
+  window.history.replaceState({}, "", "/");
+  accountOpen.value = true;
+  authBusy.value = true;
+  try {
+    authStatus.value = await completeAuth(code, state);
+    authorizeUrl.value = null;
+  } catch (exc) {
+    authError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    authBusy.value = false;
+  }
+}
+
 let annotationPoll: number | undefined;
 
 async function loadAnnotations() {
@@ -234,6 +342,10 @@ async function analyseMoves() {
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
   if (target instanceof HTMLInputElement) return;
+  if (event.key === "Escape" && accountOpen.value) {
+    closeAccount();
+    return;
+  }
   if (!placement.value) return;
 
   if (event.key === "Escape") {
@@ -256,6 +368,8 @@ function select(digest: string) {
 
 onMounted(() => {
   window.addEventListener("keydown", onKey);
+  refreshAuth();
+  finishSignIn();
   load();
 });
 
@@ -264,6 +378,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(pending);
   window.clearTimeout(explainTimer);
   window.clearTimeout(annotationPoll);
+  window.clearTimeout(importPoll);
 });
 </script>
 
@@ -287,6 +402,19 @@ onBeforeUnmount(() => {
         <span class="spinner" :class="{ on: loading }" aria-hidden="true" />
       </header>
       <p class="tagline">Every line {{ username }} actually plays.</p>
+
+      <button
+        type="button"
+        class="account-button"
+        :class="{ live: authStatus?.connected }"
+        @click="accountOpen ? closeAccount() : openAccount()"
+      >
+        <span class="dot" />
+        <span v-if="authStatus?.connected">
+          {{ authStatus.username ?? "Signed in" }} &middot; {{ authStatus.export_rate }}/s
+        </span>
+        <span v-else>Sign in for faster imports</span>
+      </button>
 
       <label class="player">
         <span class="name">Player</span>
@@ -328,8 +456,25 @@ onBeforeUnmount(() => {
     </section>
 
     <Transition name="rise">
+      <AccountPanel
+        v-if="accountOpen"
+        :status="authStatus"
+        :authorize-url="authorizeUrl"
+        :username="username"
+        :job="importJob"
+        :busy="authBusy"
+        :error="authError"
+        class="inspector-slot"
+        @connect="connect"
+        @disconnect="disconnect"
+        @run-import="runImport"
+        @close="closeAccount"
+      />
+    </Transition>
+
+    <Transition name="rise">
       <Inspector
-        v-if="active"
+        v-if="active && !accountOpen"
         :placed="active"
         :continuations="continuations"
         :pinned="pinned !== null"
@@ -426,6 +571,35 @@ h1 {
   }
 }
 
+.account-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: 11px;
+  color: var(--muted);
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.account-button:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.account-button .dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--faint);
+}
+.account-button.live .dot {
+  background: #199e70;
+}
+.account-button.live {
+  color: var(--text);
+}
 .player {
   display: flex;
   align-items: center;
