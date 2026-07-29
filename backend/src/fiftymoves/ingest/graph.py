@@ -22,6 +22,7 @@ class _Node:
         self.openings: Counter[tuple[str, str]] = Counter()
         self.scores: list[float] = []
         self.as_white = 0
+        self.ratings: list[int] = []
 
     def observe(self, game: GameRecord, family: str) -> None:
         if game.game_id in self.games:
@@ -31,6 +32,8 @@ class _Node:
         if game.opening_name:
             self.openings[(game.eco or "", game.opening_name)] += 1
         self.scores.append(game.score)
+        if game.opponent_rating:
+            self.ratings.append(game.opponent_rating)
         if game.player_is_white:
             self.as_white += 1
 
@@ -53,6 +56,11 @@ class _Node:
             return None
         codes = {code for code, _ in self.openings if code}
         return (codes.pop() if len(codes) == 1 else ""), agreed
+
+    def rating(self) -> int | None:
+        if not self.ratings:
+            return None
+        return round(sum(self.ratings) / len(self.ratings))
 
     def player_to_move(self, side: Side) -> bool:
         white_to_move = self.key.epd.split(" ")[1] == "w"
@@ -258,6 +266,7 @@ def prune_walk(
             family=family,
             family_share=share,
             score=sum(node.scores) / len(node.scores) if node.scores else 0.5,
+            rating=node.rating(),
         )
 
     out_nodes = tuple(_node(digest, node) for digest, node in nodes.items() if digest in reachable)

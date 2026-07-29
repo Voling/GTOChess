@@ -22,6 +22,9 @@ class GraphNode(BaseModel):
     family: str | None
     family_share: float
     score: float
+    rating: int | None = Field(
+        default=None, description="Mean opponent rating across the games through here"
+    )
     opening: int | None = Field(
         default=None,
         description="Index into RepertoireGraph.openings, interned to keep nodes small",
