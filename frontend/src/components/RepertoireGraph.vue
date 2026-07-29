@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { familyColor, HIGHLIGHT, NEUTRAL } from "../families";
 import type { PlacedNode, Placement, Trail } from "../layout";
 
 const props = defineProps<{
   placement: Placement;
   trail: Trail;
   activeDigest: string | null;
+  slots: Map<string, number>;
+  highlighted: string | null;
 }>();
 
 const emit = defineEmits<{ hover: [digest: string | null]; select: [digest: string] }>();
@@ -99,8 +102,15 @@ const isLit = (placed: PlacedNode) => placed.intensity >= LIT;
 const blooms = (placed: PlacedNode) => placed.intensity >= BLOOM;
 
 function fill(placed: PlacedNode): string {
-  const t = placed.intensity;
-  return `hsl(254 ${4 + t * 80}% ${28 + t * 48}%)`;
+  if (props.highlighted) {
+    return placed.node.family === props.highlighted ? HIGHLIGHT : NEUTRAL;
+  }
+  return familyColor(placed.node.family, props.slots);
+}
+
+function fillOpacity(placed: PlacedNode): number {
+  if (props.highlighted && placed.node.family !== props.highlighted) return 0.18;
+  return 0.45 + 0.55 * placed.intensity;
 }
 
 function labelled(placed: PlacedNode): boolean {
@@ -194,7 +204,12 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
               :fill="fill(placed)"
               :opacity="placed.intensity * 0.17"
             />
-            <circle class="dot" :r="dotRadius(placed)" :fill="fill(placed)" />
+            <circle
+              class="dot"
+              :r="dotRadius(placed)"
+              :fill="fill(placed)"
+              :fill-opacity="fillOpacity(placed)"
+            />
             <path
               v-for="(d, i) in whiskers(placed)"
               :key="i"

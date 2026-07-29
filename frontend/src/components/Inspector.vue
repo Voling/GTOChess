@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { Explanation, OpeningFamily } from "../api";
+import { familyColor, NEUTRAL } from "../families";
 import type { PlacedEdge, PlacedNode } from "../layout";
+import ExplanationPanel from "./ExplanationPanel.vue";
 import MiniBoard from "./MiniBoard.vue";
 
 const props = defineProps<{
   placed: PlacedNode;
   continuations: PlacedEdge[];
   pinned: boolean;
+  family: OpeningFamily | null;
+  slots: Map<string, number>;
+  explanation: Explanation | null;
+  explaining: boolean;
+  explanationError: string | null;
 }>();
 
-const emit = defineEmits<{ go: [digest: string]; close: [] }>();
+const emit = defineEmits<{ go: [digest: string]; close: []; retry: [] }>();
 
 const line = computed(() => {
   const path = props.placed.node.san_path;
@@ -39,6 +47,15 @@ const share = (edge: PlacedEdge) =>
 
     <MiniBoard :epd="placed.node.epd" :size="240" />
 
+    <p v-if="family" class="family">
+      <span
+        class="swatch"
+        :style="{ background: familyColor(family.key, slots) }"
+        :class="{ hollow: familyColor(family.key, slots) === NEUTRAL }"
+      />
+      {{ family.name }}
+    </p>
+
     <p class="num line">{{ line }}</p>
 
     <dl>
@@ -47,8 +64,8 @@ const share = (edge: PlacedEdge) =>
         <dd class="num">{{ placed.node.games }}</dd>
       </div>
       <div>
-        <dt>Move</dt>
-        <dd class="num">{{ Math.ceil(placed.node.depth_ply / 2) || "—" }}</dd>
+        <dt>You score</dt>
+        <dd class="num">{{ Math.round(placed.node.score * 100) }}%</dd>
       </div>
       <div>
         <dt>To move</dt>
@@ -75,6 +92,14 @@ const share = (edge: PlacedEdge) =>
       {{ placed.node.pruned_child_games }}
       {{ placed.node.pruned_child_games === 1 ? "game" : "games" }}. Lower min games to show them.
     </p>
+
+    <ExplanationPanel
+      v-if="pinned"
+      :explanation="explanation"
+      :loading="explaining"
+      :error="explanationError"
+      @retry="emit('retry')"
+    />
   </aside>
 </template>
 
@@ -85,6 +110,26 @@ const share = (edge: PlacedEdge) =>
   display: grid;
   gap: 12px;
   justify-items: stretch;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.family {
+  margin: -4px 0 -4px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+.swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+}
+.swatch.hollow {
+  background: transparent !important;
+  border: 1px solid var(--faint);
 }
 header {
   display: flex;

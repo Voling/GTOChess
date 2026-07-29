@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { fetchGraph, GraphError, type RepertoireGraph } from "./api";
+import {
+  fetchExplanation,
+  fetchGraph,
+  GraphError,
+  type Explanation,
+  type GraphQuery,
+  type RepertoireGraph,
+} from "./api";
+import { slotIndex } from "./families";
 import { pathTo, placeRadial, walk, type PlacedNode } from "./layout";
+import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
 import Stepper from "./components/Stepper.vue";
@@ -20,8 +29,21 @@ const loading = ref(false);
 
 const hovered = ref<string | null>(null);
 const pinned = ref<string | null>(null);
+const highlighted = ref<string | null>(null);
+
+const explanation = ref<Explanation | null>(null);
+const explaining = ref(false);
+const explanationError = ref<string | null>(null);
 
 const placement = computed(() => (graph.value ? placeRadial(graph.value, RADIUS) : null));
+const slots = computed(() => (graph.value ? slotIndex(graph.value) : new Map<string, number>()));
+
+const query = computed<GraphQuery>(() => ({
+  username: username.value,
+  maxPly: maxPly.value,
+  minVolume: minVolume.value,
+  maxChildren: maxChildren.value,
+}));
 
 const active = computed<PlacedNode | null>(() => {
   const digest = pinned.value ?? hovered.value;
@@ -34,6 +56,12 @@ const trail = computed(() => pathTo(placement.value, active.value?.node.digest ?
 const continuations = computed(() => {
   if (!placement.value || !active.value) return [];
   return placement.value.outgoing.get(active.value.node.digest) ?? [];
+});
+
+const activeFamily = computed(() => {
+  const key = active.value?.node.family;
+  if (!graph.value || !key) return null;
+  return graph.value.families.find((f) => f.key === key) ?? null;
 });
 
 const empty = computed(() => graph.value !== null && graph.value.edges.length === 0);
@@ -56,6 +84,7 @@ async function load() {
     graph.value = result;
     pinned.value = result.root;
     hovered.value = null;
+    highlighted.value = null;
   } catch (exc) {
     if (mine !== request) return;
     missing.value = exc instanceof GraphError && exc.status === 404;
@@ -81,6 +110,41 @@ function rename(event: Event) {
 }
 
 watch([maxPly, minVolume, maxChildren], schedule);
+
+let explainRequest = 0;
+let explainTimer: number | undefined;
+
+async function explain(digest: string) {
+  const mine = ++explainRequest;
+  explaining.value = true;
+  explanationError.value = null;
+  explanation.value = null;
+  try {
+    const result = await fetchExplanation(query.value, digest);
+    if (mine !== explainRequest) return;
+    explanation.value = result;
+  } catch (exc) {
+    if (mine !== explainRequest) return;
+    explanationError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    if (mine === explainRequest) explaining.value = false;
+  }
+}
+
+function scheduleExplain() {
+  window.clearTimeout(explainTimer);
+  explainRequest += 1;
+  explanation.value = null;
+  explanationError.value = null;
+  explaining.value = false;
+
+  const digest = pinned.value;
+  if (!digest) return;
+  explaining.value = true;
+  explainTimer = window.setTimeout(() => explain(digest), 200);
+}
+
+watch(pinned, scheduleExplain);
 
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
@@ -113,6 +177,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
   window.clearTimeout(pending);
+  window.clearTimeout(explainTimer);
 });
 </script>
 
@@ -123,6 +188,8 @@ onBeforeUnmount(() => {
       :placement="placement"
       :trail="trail"
       :active-digest="active?.node.digest ?? null"
+      :slots="slots"
+      :highlighted="highlighted"
       @hover="hovered = $event"
       @select="select"
     />
@@ -154,6 +221,10 @@ onBeforeUnmount(() => {
         {{ graph.nodes.length }} positions &middot; {{ graph.edges.length }} of
         {{ graph.considered_edges }} moves
       </p>
+      <p class="hint">
+        Rings count moves, amber ticks mark pruned replies, dashes join lines that transpose.
+        Arrow keys walk the tree.
+      </p>
     </section>
 
     <Transition name="rise">
@@ -162,41 +233,26 @@ onBeforeUnmount(() => {
         :placed="active"
         :continuations="continuations"
         :pinned="pinned !== null"
+        :family="activeFamily"
+        :slots="slots"
+        :explanation="explanation"
+        :explaining="explaining"
+        :explanation-error="explanationError"
         class="inspector-slot"
         @go="pinned = $event"
         @close="pinned = null"
+        @retry="scheduleExplain"
       />
     </Transition>
 
-    <section v-if="placement && !empty" class="legend material">
-      <div class="row">
-        <svg width="38" height="14" aria-hidden="true">
-          <circle cx="5" cy="7" r="2" fill="hsl(254 10% 34%)" />
-          <circle cx="17" cy="7" r="3.6" fill="hsl(254 48% 54%)" />
-          <circle cx="31" cy="7" r="5.2" fill="hsl(254 80% 74%)" />
-        </svg>
-        <span>Brighter means you played it more</span>
-      </div>
-      <div class="row">
-        <svg width="38" height="14" aria-hidden="true">
-          <circle cx="14" cy="7" r="4" fill="hsl(254 48% 54%)" />
-          <path
-            d="M20,3L26,1M20,7L27,7M20,11L26,13"
-            stroke="#d8a75a"
-            stroke-width="1.1"
-            stroke-linecap="round"
-          />
-        </svg>
-        <span>Ticks mark replies hidden by pruning</span>
-      </div>
-      <div class="row">
-        <svg width="38" height="14" aria-hidden="true">
-          <path d="M2,7L36,7" stroke="#7b7490" stroke-width="1.2" stroke-dasharray="3 4" />
-        </svg>
-        <span>Dashes join lines that transpose</span>
-      </div>
-      <p class="hint">Rings count moves. Arrow keys walk the tree.</p>
-    </section>
+    <FamilyLegend
+      v-if="graph && graph.families.length > 0 && !empty"
+      :families="graph.families"
+      :slots="slots"
+      :highlighted="highlighted"
+      class="legend-slot"
+      @highlight="highlighted = $event"
+    />
 
     <div v-if="missing" class="notice material" role="alert">
       <span class="eyebrow">Not imported yet</span>
@@ -307,32 +363,17 @@ input:focus {
   right: 16px;
 }
 
-.legend {
+.legend-slot {
   position: absolute;
   left: 16px;
   bottom: 16px;
-  width: 244px;
-  padding: 11px 13px;
-  display: grid;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.legend .row {
-  display: grid;
-  grid-template-columns: 38px 1fr;
-  align-items: center;
-  gap: 11px;
-  line-height: 1.35;
-}
-.legend svg {
-  overflow: visible;
 }
 .hint {
   margin: 3px 0 0;
-  padding-top: 8px;
+  padding-top: 9px;
   border-top: 1px solid var(--line);
   font-size: 10.5px;
+  line-height: 1.45;
   color: var(--faint);
 }
 
