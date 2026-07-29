@@ -36,6 +36,7 @@ export interface Placement {
   children: Map<string, string[]>;
   root: string;
   radius: number;
+  ringGap: number;
 }
 
 export interface Trail {
@@ -127,6 +128,7 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
     children,
     root: graph.root,
     radius,
+    ringGap: radius,
   };
   if (!root) return base;
 
@@ -134,6 +136,8 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   const ceiling = Math.log1p(maxGames);
   const spread = Math.max(maxDepth(root) - 1, 1);
   const ringRadius = new Map<number, number>();
+
+  base.ringGap = (radius * (1 - INNER_RING)) / spread;
 
   const ringAt = (depth: number) =>
     depth === 0 ? 0 : radius * (INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread));

@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     # A large import runs to hundreds of megabytes in memory, so this stays small.
     graph_cache_entries: int = 8
+    walk_cache_entries: int = 4
 
     job_result_ttl_s: int = 86400
     job_report_every: int = 250

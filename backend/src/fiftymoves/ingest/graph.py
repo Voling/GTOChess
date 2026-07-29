@@ -50,18 +50,29 @@ class _Edge:
         self.games: set[str] = set()
 
 
-def build_graph(
-    games: Sequence[GameRecord],
-    *,
-    side: Side = Side.BOTH,
-    max_ply: int = 12,
-    min_volume: int = 1,
-    max_children: int = 4,
-    family_window_ply: int = 16,
-    family_min_games: int = 4,
-    family_prior_games: int = 12,
-    family_slots: int = 3,
-) -> RepertoireGraph:
+class GameWalk:
+    """Every position the games reach. Independent of how the graph is pruned."""
+
+    def __init__(
+        self,
+        side: Side,
+        max_ply: int,
+        root: str,
+        nodes: dict[str, _Node],
+        edges: dict[tuple[str, str], _Edge],
+        games: list[GameRecord],
+    ) -> None:
+        self.side = side
+        self.max_ply = max_ply
+        self.root = root
+        self.nodes = nodes
+        self.edges = edges
+        self.games = games
+
+
+def walk_games(
+    games: Sequence[GameRecord], *, side: Side = Side.BOTH, max_ply: int = 12
+) -> GameWalk:
     standard = [
         g
         for g in games
@@ -73,6 +84,10 @@ def build_graph(
         root_key.digest: _Node(root_key, 0, ()),
     }
     edges: dict[tuple[str, str], _Edge] = {}
+    # Generating a position's digest means rendering a FEN, which dominates the
+    # walk. Games share prefixes, so the same move from the same position is
+    # replayed constantly: remember where each one lands.
+    lands_on: dict[tuple[str, str], _Node] = {}
 
     for game in standard:
         board = chess.Board()
@@ -90,26 +105,72 @@ def build_graph(
                 break
 
             by_player = (board.turn == chess.WHITE) == game.player_is_white
-
+            uci = move.uci()
             board.push(move)
             path = (*path, san)
-            child_key = position_key(board)
-            child_digest = child_key.digest
 
-            child = nodes.get(child_digest)
+            link = (parent_digest, uci)
+            child = lands_on.get(link)
             if child is None:
-                child = _Node(child_key, ply + 1, path)
-                nodes[child_digest] = child
+                child_key = position_key(board)
+                child = nodes.get(child_key.digest)
+                if child is None:
+                    child = _Node(child_key, ply + 1, path)
+                    nodes[child_key.digest] = child
+                lands_on[link] = child
             child.observe(game, family)
+            child_digest = child.key.digest
 
             edge_id = (parent_digest, child_digest)
             edge = edges.get(edge_id)
             if edge is None:
-                edge = _Edge(parent_digest, child_digest, move.uci(), san, by_player)
+                edge = _Edge(parent_digest, child_digest, uci, san, by_player)
                 edges[edge_id] = edge
             edge.games.add(game.game_id)
 
             parent_digest = child_digest
+
+    return GameWalk(side, max_ply, root_key.digest, nodes, edges, standard)
+
+
+def build_graph(
+    games: Sequence[GameRecord],
+    *,
+    side: Side = Side.BOTH,
+    max_ply: int = 12,
+    min_volume: int = 1,
+    max_children: int = 4,
+    family_window_ply: int = 16,
+    family_min_games: int = 4,
+    family_prior_games: int = 12,
+    family_slots: int = 3,
+) -> RepertoireGraph:
+    return prune_walk(
+        walk_games(games, side=side, max_ply=max_ply),
+        min_volume=min_volume,
+        max_children=max_children,
+        family_window_ply=family_window_ply,
+        family_min_games=family_min_games,
+        family_prior_games=family_prior_games,
+        family_slots=family_slots,
+    )
+
+
+def prune_walk(
+    walk: GameWalk,
+    *,
+    min_volume: int = 1,
+    max_children: int = 4,
+    family_window_ply: int = 16,
+    family_min_games: int = 4,
+    family_prior_games: int = 12,
+    family_slots: int = 3,
+) -> RepertoireGraph:
+    side = walk.side
+    standard = walk.games
+    nodes = walk.nodes
+    edges = walk.edges
+    root_digest = walk.root
 
     by_parent: dict[str, list[_Edge]] = defaultdict(list)
     for edge in edges.values():
@@ -130,7 +191,7 @@ def build_graph(
                 pruned_children[parent] += 1
                 pruned_games[parent] += len(edge.games)
 
-    reachable = {root_key.digest}
+    reachable = {root_digest}
     for edge in sorted(kept, key=lambda e: len(nodes[e.parent].san_path)):
         if edge.parent in reachable:
             reachable.add(edge.child)
@@ -178,7 +239,7 @@ def build_graph(
     )
 
     return RepertoireGraph(
-        root=root_key.digest,
+        root=root_digest,
         side=side,
         nodes=out_nodes,
         edges=out_edges,

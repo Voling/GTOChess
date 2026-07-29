@@ -51,6 +51,9 @@ const attribution = computed(() => {
           &middot; {{ explanation.dropped_claims }} uncited
           {{ explanation.dropped_claims === 1 ? "claim" : "claims" }} dropped</template>
       </p>
+      <p v-if="explanation.fallback_reason" class="fallback">
+        The model was unavailable, so this is read straight off the measurements.
+      </p>
     </template>
   </section>
 </template>
@@ -135,5 +138,11 @@ ol {
   margin: 0;
   font-size: 10px;
   color: var(--faint);
+}
+.fallback {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--amber);
 }
 </style>

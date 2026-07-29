@@ -17,7 +17,7 @@ from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
-from fiftymoves.ingest.graph import build_graph
+from fiftymoves.ingest.graph import GameWalk, prune_walk, walk_games
 from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
 from fiftymoves.ingest.tokens import TokenStore, resolve_token
 from fiftymoves.jobs.tasks import annotate_player, import_player
@@ -30,7 +30,7 @@ from fiftymoves.llm.explain import (
     study_key,
     study_position,
 )
-from fiftymoves.llm.provider import ProviderError
+from fiftymoves.llm.provider import DeterministicProvider, ProviderError
 
 app = FastAPI(title="FiftyMoves", version="0.1.0")
 
@@ -76,6 +76,7 @@ def player_games(username: str) -> tuple[GameRecord, ...]:
 
 
 _graphs: LruCache[RepertoireGraph] | None = None
+_walks: LruCache[GameWalk] | None = None
 
 
 def graph_cache() -> LruCache[RepertoireGraph]:
@@ -83,6 +84,27 @@ def graph_cache() -> LruCache[RepertoireGraph]:
     if _graphs is None:
         _graphs = LruCache[RepertoireGraph](get_settings().graph_cache_entries)
     return _graphs
+
+
+def walk_cache() -> LruCache[GameWalk]:
+    global _walks
+    if _walks is None:
+        _walks = LruCache[GameWalk](get_settings().walk_cache_entries)
+    return _walks
+
+
+def walk_for(username: str, *, side: Side, max_ply: int) -> GameWalk:
+    # Replaying the games is the expensive half and only depth and colour change
+    # it, so the volume and branch controls reuse this.
+    walks = walk_cache()
+    key = f"{username}:{import_stamp(username)}:{side.value}:{max_ply}"
+    cached = walks.get(key)
+    if cached is not None:
+        return cached
+
+    walk = walk_games(player_games(username), side=side, max_ply=max_ply)
+    walks.put(key, walk)
+    return walk
 
 
 def graph_for(
@@ -95,10 +117,8 @@ def graph_for(
     if cached is not None:
         return cached
 
-    graph = build_graph(
-        player_games(username),
-        side=side,
-        max_ply=max_ply,
+    graph = prune_walk(
+        walk_for(username, side=side, max_ply=max_ply),
         min_volume=min_volume,
         max_children=max_children,
         family_window_ply=settings.family_window_ply,
@@ -300,17 +320,28 @@ def position_explanation(
             )
             studies.put(engine_key, study)
 
-        explanation = explain_position(
-            board,
-            provider=provider,
-            digest=digest,
-            node=node,
-            family=family,
-            continuations=continuations,
-            study=study,
-        )
-    except ProviderError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        try:
+            explanation = explain_position(
+                board,
+                provider=provider,
+                digest=digest,
+                node=node,
+                family=family,
+                continuations=continuations,
+                study=study,
+            )
+        except ProviderError as exc:
+            # The engine work is already done, so still answer from the
+            # measurements rather than losing it to a model outage.
+            explanation = explain_position(
+                board,
+                provider=DeterministicProvider(),
+                digest=digest,
+                node=node,
+                family=family,
+                continuations=continuations,
+                study=study,
+            ).model_copy(update={"fallback_reason": str(exc)})
     finally:
         if engine is not None:
             engine.close()

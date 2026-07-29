@@ -39,6 +39,9 @@ class Explanation(BaseModel):
     source: str
     model: str | None = None
     dropped_claims: int = Field(default=0, description="Claims cut for citing unknown evidence")
+    fallback_reason: str | None = Field(
+        default=None, description="Why the configured model was not used"
+    )
 
     @property
     def grounded(self) -> bool:

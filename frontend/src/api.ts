@@ -136,6 +136,7 @@ export interface Explanation {
   source: string;
   model: string | null;
   dropped_claims: number;
+  fallback_reason: string | null;
 }
 
 export interface GraphEdge {

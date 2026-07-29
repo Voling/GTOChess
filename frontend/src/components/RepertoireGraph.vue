@@ -163,7 +163,12 @@ const density = computed(() => {
   return Math.min(1, Math.max(0.5, Math.sqrt(300 / Math.max(count, 1))));
 });
 
-const dotRadius = (placed: PlacedNode) => (2.2 + placed.intensity * 8.5) * density.value;
+// A deep graph packs its rings closer together. Nothing may grow wider than the
+// gap between them, or consecutive moves smear into one band.
+const dotCeiling = computed(() => props.placement.ringGap * 0.34);
+
+const dotRadius = (placed: PlacedNode) =>
+  Math.min((2.2 + placed.intensity * 8.5) * density.value, dotCeiling.value);
 const hitRadius = (placed: PlacedNode) => Math.max(dotRadius(placed) + 4, 8);
 const isLit = (placed: PlacedNode) => placed.intensity >= LIT;
 const blooms = (placed: PlacedNode) => placed.intensity >= BLOOM;
@@ -188,10 +193,13 @@ function room(placed: PlacedNode): number {
   return placed.depth === 0 ? Infinity : placed.span * Math.max(placed.radius, 1);
 }
 
+// Labels sit outside the dot, so they need radial room as well as arc. A deep
+// graph keeps them for the line you picked and drops the rest until you zoom.
 function labelled(placed: PlacedNode): boolean {
-  if (props.trail.nodes.has(placed.node.digest)) return true;
   if (props.activeDigest === placed.node.digest) return true;
-  return placed.intensity > 0.66 && room(placed) >= LABEL_ROOM;
+  const gap = props.placement.ringGap;
+  if (props.trail.nodes.has(placed.node.digest)) return gap >= 12;
+  return gap >= 20 && placed.intensity > 0.66 && room(placed) >= LABEL_ROOM;
 }
 
 function labelOffset(placed: PlacedNode) {
