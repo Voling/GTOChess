@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { Explanation, OpeningFamily } from "../api";
+import type { Explanation, OpeningFamily, OpeningName } from "../api";
 import { familyColor, NEUTRAL } from "../families";
 import type { PlacedEdge, PlacedNode } from "../layout";
 import ExplanationPanel from "./ExplanationPanel.vue";
@@ -12,13 +12,14 @@ const props = defineProps<{
   pinned: boolean;
   previewing: boolean;
   family: OpeningFamily | null;
+  opening: OpeningName | null;
   slots: Map<string, number>;
   explanation: Explanation | null;
   explaining: boolean;
   explanationError: string | null;
 }>();
 
-const emit = defineEmits<{ go: [digest: string]; close: []; retry: [] }>();
+const emit = defineEmits<{ go: [digest: string]; close: []; analyse: [] }>();
 
 const line = computed(() => {
   const path = props.placed.node.san_path;
@@ -54,7 +55,8 @@ const share = (edge: PlacedEdge) =>
         :style="{ background: familyColor(family.key, slots) }"
         :class="{ hollow: familyColor(family.key, slots) === NEUTRAL }"
       />
-      {{ family.name }}
+      <span class="named">{{ opening ? opening.name : family.name }}</span>
+      <span v-if="opening" class="num eco">{{ opening.eco }}</span>
     </p>
 
     <p class="num line">{{ line }}</p>
@@ -103,7 +105,7 @@ const share = (edge: PlacedEdge) =>
       :explanation="explanation"
       :loading="explaining"
       :error="explanationError"
-      @retry="emit('retry')"
+      @analyse="emit('analyse')"
     />
   </aside>
 </template>
@@ -121,10 +123,18 @@ const share = (edge: PlacedEdge) =>
 .family {
   margin: -4px 0 -4px;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 7px;
   font-size: 11.5px;
   color: var(--text);
+}
+.named {
+  flex: 1;
+  line-height: 1.4;
+}
+.eco {
+  font-size: 9.5px;
+  color: var(--faint);
 }
 .swatch {
   width: 9px;

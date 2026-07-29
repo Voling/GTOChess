@@ -11,6 +11,12 @@ export interface GraphNode {
   family: string | null;
   family_share: number;
   score: number;
+  opening: number | null;
+}
+
+export interface OpeningName {
+  eco: string;
+  name: string;
 }
 
 export interface OpeningFamily {
@@ -154,6 +160,7 @@ export interface RepertoireGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   families: OpeningFamily[];
+  openings: OpeningName[];
   max_games: number;
   pruned_edges: number;
   considered_edges: number;
@@ -231,8 +238,24 @@ export async function startAnnotation(query: GraphQuery): Promise<{ job_id: stri
   return response.json();
 }
 
-export function fetchExplanation(query: GraphQuery, digest: string): Promise<Explanation> {
+export interface StoredExplanation {
+  state: "ready" | "missing";
+  explanation?: Explanation;
+  model?: string | null;
+}
+
+/** Free. Returns only what has already been written for this position. */
+export function fetchExplanation(
+  query: GraphQuery,
+  digest: string,
+): Promise<StoredExplanation> {
+  const user = encodeURIComponent(query.username);
+  return get<StoredExplanation>(`/api/players/${user}/positions/${digest}/explanation`);
+}
+
+/** Spends a model call, once per position, then shared by everyone. */
+export function requestExplanation(query: GraphQuery, digest: string): Promise<Explanation> {
   const user = encodeURIComponent(query.username);
   const path = `/api/players/${user}/positions/${digest}/explanation`;
-  return get<Explanation>(`${path}?${shapeParams(query)}`);
+  return post<Explanation>(`${path}?${shapeParams(query)}`);
 }

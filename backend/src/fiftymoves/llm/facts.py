@@ -18,18 +18,23 @@ from fiftymoves.domain.openings import OpeningFamily
 PAWN = 100.0
 
 
+def pawns(score_cp: int) -> str:
+    """Evaluations read in pawns, the way players quote them."""
+    return f"{score_cp / PAWN:+.2f}"
+
+
 def mover_cp(score_cp: int, board: chess.Board) -> int:
     return score_cp if board.turn == chess.WHITE else -score_cp
 
 
 def _advantage(cp: int) -> str:
-    pawns = abs(cp) / PAWN
-    if pawns < 0.3:
+    size = abs(cp) / PAWN
+    if size < 0.3:
         return "level"
     side = "the side to move" if cp > 0 else "the opponent"
-    if pawns < 0.8:
+    if size < 0.8:
         return f"a slight edge for {side}"
-    if pawns < 1.8:
+    if size < 1.8:
         return f"a clear edge for {side}"
     return f"a winning advantage for {side}"
 
@@ -41,7 +46,7 @@ def _eval_statement(report: EngineReport, board: chess.Board) -> str:
         return f"The engine sees mate in {abs(best.mate_in)} for {who} at depth {report.depth}."
     cp = mover_cp(report.score_cp, board)
     return (
-        f"The engine evaluates the position at {cp:+d} centipawns for the side to move "
+        f"The engine evaluates the position at {pawns(cp)} for the side to move "
         f"at depth {report.depth}, which is {_advantage(cp)}."
     )
 
@@ -53,7 +58,7 @@ def _line_statement(report: EngineReport, board: chess.Board, rank: int) -> str 
     pv = " ".join(line.pv_san[:6])
     cp = mover_cp(line.score_cp, board)
     label = "The engine's first choice" if rank == 1 else f"The engine's option {rank}"
-    return f"{label} is {line.move_san} ({cp:+d} centipawns), continuing {pv}."
+    return f"{label} is {line.move_san} ({pawns(cp)}), continuing {pv}."
 
 
 def _sensitivity_statement(item: SensitivityItem) -> str:
@@ -64,17 +69,17 @@ def _sensitivity_statement(item: SensitivityItem) -> str:
         worth = "more" if item.residual_cp * item.expected_cp > 0 else "less"
         return (
             f"Removing the {piece} on {item.square} {direction} the evaluation by "
-            f"{swing} centipawns, which is {abs(item.residual_cp)} centipawns {worth} than "
+            f"{pawns(swing)}, which is {pawns(abs(item.residual_cp))} {worth} than "
             f"its material value alone, so it is doing that much extra work here."
         )
     if item.kind is AblationKind.MOVE_SPACE:
         return (
             f"Restricting the side to move to its remaining options {direction} the "
-            f"evaluation by {swing} centipawns, so the specific move matters more than the plan."
+            f"evaluation by {pawns(swing)}, so the specific move matters more than the plan."
         )
     return (
-        f"Handing the opponent a free move {direction} the evaluation by {swing} "
-        f"centipawns, which measures how much the initiative is worth."
+        f"Handing the opponent a free move {direction} the evaluation by {pawns(swing)}, "
+        f"which measures how much the initiative is worth."
     )
 
 
@@ -82,7 +87,7 @@ def _landscape_statement(landscape: EvalLandscape) -> str:
     if landscape.is_single_answer:
         return (
             f"Only one move holds the position: the second best is "
-            f"{landscape.delta_to_second_cp} centipawns worse across "
+            f"{pawns(landscape.delta_to_second_cp or 0)} worse across "
             f"{landscape.legal_move_count} legal moves."
         )
     return (

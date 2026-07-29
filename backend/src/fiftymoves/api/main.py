@@ -17,6 +17,7 @@ from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
+from fiftymoves.ingest.explanation_store import ExplanationStore
 from fiftymoves.ingest.graph import GameWalk, prune_walk, walk_games
 from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
 from fiftymoves.ingest.tokens import TokenStore, resolve_token
@@ -30,7 +31,7 @@ from fiftymoves.llm.explain import (
     study_key,
     study_position,
 )
-from fiftymoves.llm.provider import DeterministicProvider, ProviderError
+from fiftymoves.llm.provider import ExplanationProvider, ProviderError
 from fiftymoves.llm.tools import EngineProbe
 
 app = FastAPI(title="FiftyMoves", version="0.1.0")
@@ -48,6 +49,17 @@ app.add_middleware(
 
 def data_dir(settings: Settings) -> Path:
     return settings.data_dir
+
+
+def configured_provider(settings: Settings) -> ExplanationProvider:
+    return build_provider(
+        kind=settings.llm_provider,
+        model=settings.llm_model,
+        effort=settings.llm_effort,
+        max_tokens=settings.llm_max_tokens,
+        timeout=settings.llm_timeout_s,
+        api_key=settings.anthropic_credentials(),
+    )
 
 
 def games_file(username: str) -> Path:
@@ -257,8 +269,26 @@ def player_graph(
     )
 
 
-@app.get("/api/players/{username}/positions/{digest}/explanation", response_model=Explanation)
-def position_explanation(
+@app.get("/api/players/{username}/positions/{digest}/explanation")
+def read_explanation(username: str, digest: str) -> dict[str, Any]:
+    """Never spends money. Returns what has already been written for this position."""
+    settings = get_settings()
+    provider = configured_provider(settings)
+    key = cache_key(digest, settings.pipeline_version, provider)
+
+    cached = get_cache(settings.llm_cache_entries).get(key)
+    if cached is None:
+        cached = ExplanationStore(settings.data_dir).get(key)
+        if cached is not None:
+            get_cache(settings.llm_cache_entries).put(key, cached)
+
+    if cached is None:
+        return {"state": "missing", "model": provider.model}
+    return {"state": "ready", "explanation": cached.model_dump()}
+
+
+@app.post("/api/players/{username}/positions/{digest}/explanation", response_model=Explanation)
+def write_explanation(
     username: str,
     digest: str,
     side: Side = DEFAULT_SIDE,
@@ -266,28 +296,22 @@ def position_explanation(
     min_volume: int = Query(default=1, ge=1),
     max_children: int = Query(default=4, ge=1, le=12),
 ) -> Explanation:
+    """Spends a model call. One per position, then shared by everyone."""
     settings = get_settings()
+    provider = configured_provider(settings)
+    key = cache_key(digest, settings.pipeline_version, provider)
+    store = ExplanationStore(settings.data_dir)
+
+    existing = get_cache(settings.llm_cache_entries).get(key) or store.get(key)
+    if existing is not None:
+        return existing
+
     graph = graph_for(
         username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
     )
-
     node = next((n for n in graph.nodes if n.digest == digest), None)
     if node is None:
         raise HTTPException(status_code=404, detail="position is not in this graph")
-
-    provider = build_provider(
-        kind=settings.llm_provider,
-        model=settings.llm_model,
-        effort=settings.llm_effort,
-        max_tokens=settings.llm_max_tokens,
-        timeout=settings.llm_timeout_s,
-        api_key=settings.anthropic_credentials(),
-    )
-    cache = get_cache(settings.llm_cache_entries)
-    key = cache_key(digest, settings.pipeline_version, provider, side)
-    cached = cache.get(key)
-    if cached is not None:
-        return cached
 
     try:
         engine_path = settings.resolve_engine_path()
@@ -295,9 +319,6 @@ def position_explanation(
         raise HTTPException(status_code=503, detail=str(exc).splitlines()[0]) from exc
 
     board = chess.Board(f"{node.epd} 0 1")
-    family = next((f for f in graph.families if f.key == node.family), None)
-    continuations = sorted((e for e in graph.edges if e.parent == digest), key=lambda e: -e.games)
-
     studies = get_studies(settings.llm_cache_entries)
     engine_key = study_key(
         digest, settings.pipeline_version, settings.explain_depth, settings.ablation_depth
@@ -306,8 +327,7 @@ def position_explanation(
 
     engine = None
     try:
-        wants_engine = study is None or settings.llm_probe_enabled
-        if wants_engine:
+        if study is None or settings.llm_probe_enabled:
             engine = StockfishEngine(
                 str(engine_path),
                 threads=settings.engine_threads,
@@ -335,31 +355,17 @@ def position_explanation(
         )
 
         try:
+            # Nothing player specific goes in: the result is about the position,
+            # so every player who reaches it reads the same explanation.
             explanation = explain_position(
-                board,
-                provider=provider,
-                digest=digest,
-                node=node,
-                family=family,
-                continuations=continuations,
-                study=study,
-                probe=probe,
+                board, provider=provider, digest=digest, study=study, probe=probe
             )
         except ProviderError as exc:
-            # The engine work is already done, so still answer from the
-            # measurements rather than losing it to a model outage.
-            explanation = explain_position(
-                board,
-                provider=DeterministicProvider(),
-                digest=digest,
-                node=node,
-                family=family,
-                continuations=continuations,
-                study=study,
-            ).model_copy(update={"fallback_reason": str(exc)})
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         if engine is not None:
             engine.close()
 
-    cache.put(key, explanation)
+    get_cache(settings.llm_cache_entries).put(key, explanation)
+    store.put(key, explanation)
     return explanation

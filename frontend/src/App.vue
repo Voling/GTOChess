@@ -6,6 +6,7 @@ import {
   fetchAnnotations,
   fetchAuthStatus,
   fetchExplanation,
+  requestExplanation,
   fetchGraph,
   fetchImportJob,
   GraphError,
@@ -20,7 +21,7 @@ import {
   type RepertoireGraph,
   type Side,
 } from "./api";
-import { slotIndex } from "./families";
+import { defaultPicks, MAX_PICKS, slotsFor } from "./families";
 import { pathTo, placeRadial, walk, type PlacedNode } from "./layout";
 import AccountPanel from "./components/AccountPanel.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
@@ -50,7 +51,7 @@ const loading = ref(false);
 
 const hovered = ref<string | null>(null);
 const pinned = ref<string | null>(null);
-const highlighted = ref<string | null>(null);
+const picks = ref<string[]>([]);
 
 const authStatus = ref<AuthStatus | null>(null);
 const accountOpen = ref(false);
@@ -68,7 +69,20 @@ const explaining = ref(false);
 const explanationError = ref<string | null>(null);
 
 const placement = computed(() => (graph.value ? placeRadial(graph.value, RADIUS) : null));
-const slots = computed(() => (graph.value ? slotIndex(graph.value) : new Map<string, number>()));
+const slots = computed(() => slotsFor(picks.value));
+
+function togglePick(key: string) {
+  const held = picks.value;
+  if (held.includes(key)) {
+    picks.value = held.filter((k) => k !== key);
+  } else if (held.length < MAX_PICKS) {
+    picks.value = [...held, key];
+  }
+}
+
+function resetPicks() {
+  picks.value = graph.value ? defaultPicks(graph.value) : [];
+}
 
 const query = computed<GraphQuery>(() => ({
   username: username.value,
@@ -95,6 +109,12 @@ const trail = computed(() => pathTo(placement.value, pinned.value));
 const continuations = computed(() => {
   if (!placement.value || !active.value) return [];
   return placement.value.outgoing.get(active.value.node.digest) ?? [];
+});
+
+const activeOpening = computed(() => {
+  const index = active.value?.node.opening;
+  if (!graph.value || index === null || index === undefined) return null;
+  return graph.value.openings[index] ?? null;
 });
 
 const activeFamily = computed(() => {
@@ -147,7 +167,7 @@ async function load() {
     graph.value = result;
     pinned.value = result.root;
     hovered.value = null;
-    highlighted.value = null;
+    picks.value = defaultPicks(result);
     annotations.value = new Map();
     annotationState.value = "missing";
     annotationNote.value = null;
@@ -181,13 +201,27 @@ watch([side, maxPly, minVolume, maxChildren], schedule);
 let explainRequest = 0;
 let explainTimer: number | undefined;
 
-async function explain(digest: string) {
+// Reading costs nothing, so this runs on every pin.
+async function loadExplanation(digest: string) {
+  const mine = ++explainRequest;
+  try {
+    const stored = await fetchExplanation(query.value, digest);
+    if (mine !== explainRequest) return;
+    explanation.value = stored.state === "ready" ? (stored.explanation ?? null) : null;
+  } catch {
+    if (mine === explainRequest) explanation.value = null;
+  }
+}
+
+// Only this spends a model call, and only when the reader asks for one.
+async function requestAnalysis() {
+  const digest = pinned.value;
+  if (!digest) return;
   const mine = ++explainRequest;
   explaining.value = true;
   explanationError.value = null;
-  explanation.value = null;
   try {
-    const result = await fetchExplanation(query.value, digest);
+    const result = await requestExplanation(query.value, digest);
     if (mine !== explainRequest) return;
     explanation.value = result;
   } catch (exc) {
@@ -207,8 +241,7 @@ function scheduleExplain() {
 
   const digest = pinned.value;
   if (!digest) return;
-  explaining.value = true;
-  explainTimer = window.setTimeout(() => explain(digest), 200);
+  explainTimer = window.setTimeout(() => loadExplanation(digest), 150);
 }
 
 watch(pinned, scheduleExplain);
@@ -397,7 +430,6 @@ onBeforeUnmount(() => {
       :active-digest="active?.node.digest ?? null"
       :pinned-digest="pinned"
       :slots="slots"
-      :highlighted="highlighted"
       :annotations="annotations"
       @hover="hovered = $event"
       @select="select"
@@ -487,6 +519,7 @@ onBeforeUnmount(() => {
         :pinned="pinned !== null"
         :previewing="previewing"
         :family="activeFamily"
+        :opening="activeOpening"
         :slots="slots"
         :explanation="explanation"
         :explaining="explaining"
@@ -494,7 +527,7 @@ onBeforeUnmount(() => {
         class="inspector-slot"
         @go="pinned = $event"
         @close="pinned = null"
-        @retry="scheduleExplain"
+        @analyse="requestAnalysis"
       />
     </Transition>
 
@@ -502,9 +535,10 @@ onBeforeUnmount(() => {
       v-if="graph && graph.families.length > 0 && !empty"
       :families="graph.families"
       :slots="slots"
-      :highlighted="highlighted"
+      :picks="picks"
       class="legend-slot"
-      @highlight="highlighted = $event"
+      @toggle="togglePick"
+      @reset="resetPicks"
     />
 
     <div v-if="missing" class="notice material" role="alert">

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from fiftymoves.domain.games import Side
 from fiftymoves.domain.models import Variant
@@ -22,6 +22,10 @@ class GraphNode(BaseModel):
     family: str | None
     family_share: float
     score: float
+    opening: int | None = Field(
+        default=None,
+        description="Index into RepertoireGraph.openings, interned to keep nodes small",
+    )
 
     @property
     def label(self) -> str:
@@ -39,12 +43,20 @@ class GraphEdge(BaseModel):
     by_player: bool
 
 
+class OpeningName(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    eco: str
+    name: str
+
+
 class RepertoireGraph(BaseModel):
     root: str
     side: Side
     nodes: tuple[GraphNode, ...]
     edges: tuple[GraphEdge, ...]
     families: tuple[OpeningFamily, ...]
+    openings: tuple[OpeningName, ...] = ()
     max_games: int
     pruned_edges: int
     considered_edges: int

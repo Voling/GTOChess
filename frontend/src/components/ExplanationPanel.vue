@@ -8,7 +8,7 @@ const props = defineProps<{
   error: string | null;
 }>();
 
-const emit = defineEmits<{ retry: [] }>();
+const emit = defineEmits<{ analyse: [] }>();
 
 const byId = computed(() => new Map((props.explanation?.evidence ?? []).map((e) => [e.id, e])));
 
@@ -29,14 +29,20 @@ const attribution = computed(() => {
       <span v-if="loading" class="spinner" aria-label="Analysing" />
     </header>
 
-    <p v-if="loading" class="status">Running the engine over this position.</p>
+    <p v-if="loading" class="status">Asking the engine, then writing it up.</p>
 
     <div v-else-if="error" class="status failed">
       <p>{{ error }}</p>
-      <button type="button" @click="emit('retry')">Try again</button>
+      <button type="button" @click="emit('analyse')">Try again</button>
     </div>
 
-    <template v-else-if="explanation">
+    <div v-else-if="!explanation" class="status idle">
+      <p>No write up for this position yet.</p>
+      <button type="button" class="ask" @click="emit('analyse')">Analyse this position</button>
+      <p class="cost">Runs once, then everyone who reaches this position reads it.</p>
+    </div>
+
+    <template v-else>
       <p class="headline">{{ explanation.headline }}</p>
       <ol>
         <li v-for="(claim, i) in explanation.claims" :key="i">
@@ -105,6 +111,30 @@ header {
 }
 .status.failed button:hover {
   text-decoration: underline;
+}
+.status.idle {
+  display: grid;
+  gap: 7px;
+  justify-items: start;
+}
+.status.idle p {
+  margin: 0;
+}
+.ask {
+  padding: 5px 10px;
+  background: var(--accent-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: 11.5px;
+  color: var(--accent-bright);
+  transition: background 0.15s var(--ease);
+}
+.ask:hover {
+  background: rgba(139, 108, 239, 0.26);
+}
+.cost {
+  font-size: 10px;
+  color: var(--faint);
 }
 .headline {
   margin: 0;

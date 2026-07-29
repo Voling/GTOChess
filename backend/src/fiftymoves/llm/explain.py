@@ -9,7 +9,6 @@ from fiftymoves.analysis.landscape import compute_landscape
 from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.cache import LruCache
 from fiftymoves.domain.explanations import Evidence, Explanation
-from fiftymoves.domain.games import Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.models import EngineReport, EvalLandscape, SensitivityReport
 from fiftymoves.domain.openings import OpeningFamily
@@ -62,13 +61,9 @@ def study_key(digest: str, pipeline_version: str, depth: int, ablation_depth: in
     return f"{pipeline_version}:d{depth}:a{ablation_depth}:{digest}"
 
 
-def cache_key(
-    digest: str,
-    pipeline_version: str,
-    provider: ExplanationProvider,
-    side: Side = Side.BOTH,
-) -> str:
-    return f"{pipeline_version}:{side.value}:{provider.name}:{provider.model or 'none'}:{digest}"
+def cache_key(digest: str, pipeline_version: str, provider: ExplanationProvider) -> str:
+    """Keyed by position alone, so one paid call serves every player who lands here."""
+    return f"{pipeline_version}:{provider.name}:{provider.model or 'none'}:{digest}"
 
 
 def ground(

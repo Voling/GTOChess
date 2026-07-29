@@ -1,37 +1,44 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { OpeningFamily } from "../api";
-import { ecoRange, familyColor, NEUTRAL, sharpnessLabel } from "../families";
+import { ecoRange, familyColor, MAX_PICKS, sharpnessLabel } from "../families";
 
-defineProps<{
+const props = defineProps<{
   families: OpeningFamily[];
   slots: Map<string, number>;
-  highlighted: string | null;
+  picks: string[];
 }>();
 
-const emit = defineEmits<{ highlight: [key: string | null] }>();
+const emit = defineEmits<{ toggle: [key: string]; reset: [] }>();
+
+const full = computed(() => props.picks.length >= MAX_PICKS);
+const picked = (key: string) => props.slots.has(key);
 </script>
 
 <template>
   <section class="families material">
     <header>
-      <span class="eyebrow">Openings</span>
-      <button v-if="highlighted" type="button" class="clear" @click="emit('highlight', null)">
-        Show all
-      </button>
+      <span class="eyebrow">Openings &middot; {{ picks.length }}/{{ MAX_PICKS }}</span>
+      <button type="button" class="clear" @click="emit('reset')">Reset</button>
     </header>
 
     <ul>
       <li v-for="family in families" :key="family.key">
         <button
           type="button"
-          :class="{ muted: highlighted !== null && highlighted !== family.key }"
-          :aria-pressed="highlighted === family.key"
-          @click="emit('highlight', highlighted === family.key ? null : family.key)"
+          :class="{ muted: !picked(family.key), blocked: full && !picked(family.key) }"
+          :aria-pressed="picked(family.key)"
+          :title="
+            full && !picked(family.key)
+              ? `Deselect one first, ${MAX_PICKS} colours is the limit`
+              : family.name
+          "
+          @click="emit('toggle', family.key)"
         >
           <span
             class="swatch"
             :style="{ background: familyColor(family.key, slots) }"
-            :class="{ hollow: familyColor(family.key, slots) === NEUTRAL }"
+            :class="{ hollow: !picked(family.key) }"
           />
           <span class="name">{{ family.name }}</span>
           <span class="num games">{{ family.games }}</span>
@@ -45,8 +52,8 @@ const emit = defineEmits<{ highlight: [key: string | null] }>();
     </ul>
 
     <p class="key">
-      Colour marks your three busiest openings; the rest stay grey until you pick one. The bar is
-      how sharp your games in it run, the figure is how you score.
+      Click any opening to colour it, up to {{ MAX_PICKS }} at once. The bar is how sharp your
+      games in it run, the figure is how you score.
     </p>
   </section>
 </template>
@@ -97,7 +104,10 @@ li button:hover {
   background: var(--raised);
 }
 li button.muted {
-  opacity: 0.42;
+  opacity: 0.55;
+}
+li button.blocked {
+  opacity: 0.3;
 }
 .swatch {
   width: 9px;

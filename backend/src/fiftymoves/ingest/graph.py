@@ -7,7 +7,7 @@ import chess
 
 from fiftymoves.analysis.openings import build_families, dominant, family_key
 from fiftymoves.domain.games import GameRecord, Side
-from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
+from fiftymoves.domain.graph import GraphEdge, GraphNode, OpeningName, RepertoireGraph
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import PositionKey, Variant
 
@@ -19,6 +19,7 @@ class _Node:
         self.san_path = san_path
         self.games: set[str] = set()
         self.families: Counter[str] = Counter()
+        self.openings: Counter[tuple[str, str]] = Counter()
         self.scores: list[float] = []
         self.as_white = 0
 
@@ -27,9 +28,22 @@ class _Node:
             return
         self.games.add(game.game_id)
         self.families[family] += 1
+        if game.opening_name:
+            self.openings[(game.eco or "", game.opening_name)] += 1
         self.scores.append(game.score)
         if game.player_is_white:
             self.as_white += 1
+
+    def opening(self, min_share: float = 0.6) -> tuple[str, str] | None:
+        """The name only sticks once most games here agree on it.
+
+        Near the root every game passes through, so the commonest name is just
+        the commonest opening overall and says nothing about the position.
+        """
+        if not self.openings or not self.games:
+            return None
+        pair, count = max(self.openings.items(), key=lambda item: (item[1], item[0]))
+        return pair if count / len(self.games) >= min_share else None
 
     def player_to_move(self, side: Side) -> bool:
         white_to_move = self.key.epd.split(" ")[1] == "w"
@@ -206,10 +220,23 @@ def prune_walk(
     )
     ranked = {f.key for f in families}
 
+    # One table of names for the whole graph; nodes carry an index. A full name
+    # on every node would repeat the same forty characters hundreds of times.
+    names: dict[tuple[str, str], int] = {}
+
+    def intern(node: _Node) -> int | None:
+        pair = node.opening()
+        if pair is None:
+            return None
+        if pair not in names:
+            names[pair] = len(names)
+        return names[pair]
+
     def _node(digest: str, node: _Node) -> GraphNode:
         counts = {k: v for k, v in node.families.items() if k in ranked}
         family, share = dominant(counts)
         return GraphNode(
+            opening=intern(node),
             digest=node.key.digest,
             epd=node.key.epd,
             variant=node.key.variant,
@@ -244,6 +271,10 @@ def prune_walk(
         nodes=out_nodes,
         edges=out_edges,
         families=tuple(families),
+        openings=tuple(
+            OpeningName(eco=eco, name=name)
+            for (eco, name), _ in sorted(names.items(), key=lambda pair: pair[1])
+        ),
         max_games=max((n.games for n in out_nodes), default=0),
         pruned_edges=pruned_count,
         considered_edges=len(edges),

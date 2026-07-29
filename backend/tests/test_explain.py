@@ -8,7 +8,6 @@ import pytest
 from fiftymoves.analysis.landscape import compute_landscape
 from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.domain.explanations import Claim, Evidence, EvidenceKind, Explanation
-from fiftymoves.domain.games import Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import Variant
@@ -241,12 +240,14 @@ class TestCache:
         stub = StubProvider(Draft(headline="h", claims=()))
         assert cache_key("d", "v1", stub) != cache_key("d", "v1", DeterministicProvider())
 
-    def test_the_key_separates_colours(self) -> None:
+    def test_one_position_has_one_explanation(self) -> None:
+        # A paid call is about the position, so every player and colour shares it.
         provider = DeterministicProvider()
-        white = cache_key("d", "v1", provider, Side.WHITE)
-        black = cache_key("d", "v1", provider, Side.BLACK)
-        assert white != black
-        assert white != cache_key("d", "v1", provider, Side.BOTH)
+        assert cache_key("d", "v1", provider) == cache_key("d", "v1", provider)
+
+    def test_different_positions_do_not_share(self) -> None:
+        provider = DeterministicProvider()
+        assert cache_key("a", "v1", provider) != cache_key("b", "v1", provider)
 
     def test_the_engine_study_is_shared_across_colours(self) -> None:
         assert study_key("d", "v1", 18, 12) == study_key("d", "v1", 18, 12)

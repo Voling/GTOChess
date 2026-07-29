@@ -6,6 +6,7 @@ import chess
 
 from fiftymoves.domain.explanations import Evidence, EvidenceKind
 from fiftymoves.engine.protocol import EngineProvider
+from fiftymoves.llm.facts import pawns
 
 EVALUATE_LINE = "evaluate_line"
 BEST_REPLIES = "best_replies"
@@ -128,7 +129,7 @@ class EngineProbe:
         if best.mate_in is not None:
             detail = f"mate in {abs(best.mate_in)}"
         else:
-            detail = f"{cp:+d} centipawns for {mover}"
+            detail = f"{pawns(cp)} for {mover}"
         statement = (
             f"After {line or 'no moves'} the engine gives {detail} at depth {self._depth}, "
             f"with {best.move_san} to follow."
@@ -152,7 +153,8 @@ class EngineProbe:
         report = self._engine.analyse(probe, depth=self._depth, multipv=bounded)
         mover = "White" if probe.turn == chess.WHITE else "Black"
         parts = [
-            f"{item.move_san} ({self._mover_cp(item.score_cp, probe):+d})" for item in report.lines
+            f"{item.move_san} ({pawns(self._mover_cp(item.score_cp, probe))})"
+            for item in report.lines
         ]
         where = f"after {line}" if line else "here"
         statement = (

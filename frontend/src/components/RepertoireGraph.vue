@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { MoveAnnotation } from "../api";
-import { familyColor, HIGHLIGHT, NEUTRAL } from "../families";
+import { familyColor } from "../families";
 import type { PlacedNode, Placement, Trail } from "../layout";
 
 const props = defineProps<{
@@ -10,9 +10,22 @@ const props = defineProps<{
   activeDigest: string | null;
   pinnedDigest: string | null;
   slots: Map<string, number>;
-  highlighted: string | null;
   annotations: Map<string, MoveAnnotation>;
 }>();
+
+// A ring around the dot: how you score there against your own average.
+const EVEN = 0.5;
+
+function scoreRing(placed: PlacedNode): string {
+  const edge = placed.node.score - EVEN;
+  if (Math.abs(edge) < 0.04) return "#7b7490";
+  return edge > 0 ? "#199e70" : "#e66767";
+}
+
+function scoreArc(placed: PlacedNode): number {
+  const strength = Math.min(1, Math.abs(placed.node.score - EVEN) / 0.25);
+  return 0.25 + 0.75 * strength;
+}
 
 const FLAW_COLORS: Record<string, string> = {
   "??": "#e66767",
@@ -167,6 +180,9 @@ const density = computed(() => {
 // gap between them, or consecutive moves smear into one band.
 const dotCeiling = computed(() => props.placement.ringGap * 0.34);
 
+// The ring needs its own space; below that it just thickens the dot.
+const showScoreRings = computed(() => props.placement.ringGap >= 14);
+
 const dotRadius = (placed: PlacedNode) =>
   Math.min((2.2 + placed.intensity * 8.5) * density.value, dotCeiling.value);
 const hitRadius = (placed: PlacedNode) => Math.max(dotRadius(placed) + 4, 8);
@@ -174,14 +190,10 @@ const isLit = (placed: PlacedNode) => placed.intensity >= LIT;
 const blooms = (placed: PlacedNode) => placed.intensity >= BLOOM;
 
 function fill(placed: PlacedNode): string {
-  if (props.highlighted) {
-    return placed.node.family === props.highlighted ? HIGHLIGHT : NEUTRAL;
-  }
   return familyColor(placed.node.family, props.slots);
 }
 
 function fillOpacity(placed: PlacedNode): number {
-  if (props.highlighted && placed.node.family !== props.highlighted) return 0.18;
   return 0.45 + 0.55 * placed.intensity;
 }
 
@@ -289,6 +301,13 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
               :r="dotRadius(placed)"
               :fill="fill(placed)"
               :fill-opacity="fillOpacity(placed)"
+            />
+            <circle
+              v-if="showScoreRings && placed.depth > 0"
+              class="score-ring"
+              :r="dotRadius(placed) + 1.8"
+              :stroke="scoreRing(placed)"
+              :stroke-opacity="scoreArc(placed)"
             />
             <text
               v-if="labelled(placed)"
@@ -401,6 +420,18 @@ svg.tracing .nodes g.lit .halo {
 .nodes g.active .dot {
   stroke: #ffffff;
   stroke-width: 1.4;
+  opacity: 1;
+}
+.score-ring {
+  fill: none;
+  stroke-width: 1.4;
+  pointer-events: none;
+}
+svg.tracing .nodes g .score-ring {
+  opacity: 0.25;
+}
+svg.tracing .nodes g.lit .score-ring,
+svg.tracing .nodes g.active .score-ring {
   opacity: 1;
 }
 .pick-ring {
