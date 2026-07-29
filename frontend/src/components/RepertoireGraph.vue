@@ -349,7 +349,8 @@ svg.tracing .links path.lit {
 svg.tracing .nodes g .dot {
   opacity: 0.32;
 }
-svg.tracing .nodes g.lit .dot {
+svg.tracing .nodes g.lit .dot,
+svg.tracing .nodes g.active .dot {
   opacity: 1;
 }
 svg.tracing .nodes g .halo {
@@ -390,6 +391,12 @@ svg.tracing .nodes g.lit .pick-ring,
 .nodes g.active text {
   fill: #ececec;
 }
+svg.tracing .nodes g.active text {
+  opacity: 1;
+}
+svg.tracing .nodes g.active .halo {
+  opacity: 0.2 !important;
+}
 .nodes text.flaw {
   font-family: var(--ui);
   font-size: 13px;
@@ -399,7 +406,8 @@ svg.tracing .nodes g.lit .pick-ring,
 svg.tracing .nodes g text.flaw {
   opacity: 0.35;
 }
-svg.tracing .nodes g.lit text.flaw {
+svg.tracing .nodes g.lit text.flaw,
+svg.tracing .nodes g.active text.flaw {
   opacity: 1;
 }
 

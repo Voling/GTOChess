@@ -89,7 +89,8 @@ const previewing = computed(
   () => active.value !== null && pinned.value !== null && active.value.node.digest !== pinned.value,
 );
 
-const trail = computed(() => pathTo(placement.value, active.value?.node.digest ?? null));
+// The lit filament stays on the node you clicked; hovering only previews the panel.
+const trail = computed(() => pathTo(placement.value, pinned.value));
 
 const continuations = computed(() => {
   if (!placement.value || !active.value) return [];
