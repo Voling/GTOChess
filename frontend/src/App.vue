@@ -3,14 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   completeAuth,
   disconnectAuth,
-  fetchAnnotations,
+  fetchCosts,
   fetchAuthStatus,
   fetchExplanation,
   requestExplanation,
   fetchGraph,
   fetchImportJob,
   GraphError,
-  startAnnotation,
+  fetchOpeningPhase,
   startAuth,
   startImport,
   type AuthStatus,
@@ -18,11 +18,12 @@ import {
   type GraphQuery,
   type ImportJob,
   type MoveAnnotation,
+  type OpeningPhase,
   type RepertoireGraph,
   type Side,
 } from "./api";
 import { defaultPicks, MAX_PICKS, slotsFor } from "./families";
-import { pathTo, placeRadial, walk, type PlacedNode } from "./layout";
+import { ancestry, pathTo, placeRadial, walk, type PlacedNode } from "./layout";
 import AccountPanel from "./components/AccountPanel.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
@@ -50,8 +51,16 @@ const missing = ref(false);
 const loading = ref(false);
 
 const hovered = ref<string | null>(null);
-const pinned = ref<string | null>(null);
 const picks = ref<string[]>([]);
+const blocked = ref<string | null>(null);
+
+// The current line, root first, with a cursor on it. Stepping back keeps the
+// moves ahead so forward replays them, the way a board viewer does.
+const lineNodes = ref<string[]>([]);
+const cursor = ref(-1);
+const pinned = computed(() =>
+  cursor.value < 0 ? null : (lineNodes.value[cursor.value] ?? null),
+);
 
 const authStatus = ref<AuthStatus | null>(null);
 const accountOpen = ref(false);
@@ -61,14 +70,15 @@ const authError = ref<string | null>(null);
 const importJob = ref<ImportJob | null>(null);
 
 const annotations = ref<Map<string, MoveAnnotation>>(new Map());
-const annotationState = ref<"missing" | "running" | "ready">("missing");
 const annotationNote = ref<string | null>(null);
 
 const explanation = ref<Explanation | null>(null);
 const explaining = ref(false);
 const explanationError = ref<string | null>(null);
 
-const placement = computed(() => (graph.value ? placeRadial(graph.value, RADIUS) : null));
+const placement = computed(() =>
+  graph.value ? placeRadial(graph.value, RADIUS) : null,
+);
 const slots = computed(() => slotsFor(picks.value));
 
 function togglePick(key: string) {
@@ -100,7 +110,10 @@ const active = computed<PlacedNode | null>(() => {
 });
 
 const previewing = computed(
-  () => active.value !== null && pinned.value !== null && active.value.node.digest !== pinned.value,
+  () =>
+    active.value !== null &&
+    pinned.value !== null &&
+    active.value.node.digest !== pinned.value,
 );
 
 // The lit filament stays on the node you clicked; hovering only previews the panel.
@@ -123,7 +136,9 @@ const activeFamily = computed(() => {
   return graph.value.families.find((f) => f.key === key) ?? null;
 });
 
-const empty = computed(() => graph.value !== null && graph.value.edges.length === 0);
+const empty = computed(
+  () => graph.value !== null && graph.value.edges.length === 0,
+);
 
 // Accelerates with the value, so small floors stay reachable on a large import.
 const volumeStep = computed(() => {
@@ -165,13 +180,15 @@ async function load() {
     }
 
     graph.value = result;
-    pinned.value = result.root;
+    lineNodes.value = [result.root];
+    cursor.value = 0;
     hovered.value = null;
+    blocked.value = null;
     picks.value = defaultPicks(result);
     annotations.value = new Map();
-    annotationState.value = "missing";
     annotationNote.value = null;
     loadAnnotations();
+    loadPhase();
   } catch (exc) {
     if (mine !== request) return;
     missing.value = exc instanceof GraphError && exc.status === 404;
@@ -207,7 +224,8 @@ async function loadExplanation(digest: string) {
   try {
     const stored = await fetchExplanation(query.value, digest);
     if (mine !== explainRequest) return;
-    explanation.value = stored.state === "ready" ? (stored.explanation ?? null) : null;
+    explanation.value =
+      stored.state === "ready" ? (stored.explanation ?? null) : null;
   } catch {
     if (mine === explainRequest) explanation.value = null;
   }
@@ -340,41 +358,29 @@ async function finishSignIn() {
 
 let annotationPoll: number | undefined;
 
+// Costs are keyed by position, so a slider nudge rereads the same records
+// instead of throwing away engine time.
 async function loadAnnotations() {
   window.clearTimeout(annotationPoll);
   try {
-    const response = await fetchAnnotations(query.value);
-    if (response.state === "ready" && response.annotations) {
-      const set = response.annotations;
-      annotations.value = new Map(set.annotations.map((a) => [a.child, a]));
-      annotationState.value = "ready";
-      const flawed = set.annotations.filter((a) => a.quality !== "sound").length;
-      annotationNote.value =
-        `${flawed} of ${set.annotations.length} moves flagged` +
-        (set.truncated ? ", busiest positions only" : "");
-      return;
-    }
+    const response = await fetchCosts(query.value);
+    annotations.value = new Map(response.marks.map((m) => [m.child, m]));
+    annotationNote.value = response.priced_moves
+      ? `${response.flagged} flagged of ${response.priced_moves} moves priced`
+      : null;
+  } catch {
     annotations.value = new Map();
     annotationNote.value = null;
-    if (annotationState.value === "running") {
-      annotationPoll = window.setTimeout(loadAnnotations, 3000);
-    } else {
-      annotationState.value = "missing";
-    }
-  } catch {
-    annotationState.value = "missing";
   }
 }
 
-async function analyseMoves() {
-  annotationState.value = "running";
-  annotationNote.value = "Searching your positions";
+const phase = ref<OpeningPhase | null>(null);
+
+async function loadPhase() {
   try {
-    await startAnnotation(query.value);
-    annotationPoll = window.setTimeout(loadAnnotations, 3000);
-  } catch (exc) {
-    annotationState.value = "missing";
-    annotationNote.value = exc instanceof Error ? exc.message : String(exc);
+    phase.value = await fetchOpeningPhase(query.value);
+  } catch {
+    phase.value = null;
   }
 }
 
@@ -388,22 +394,105 @@ function onKey(event: KeyboardEvent) {
   if (!placement.value) return;
 
   if (event.key === "Escape") {
-    pinned.value = null;
+    clearSelection();
     hovered.value = null;
     return;
   }
   if (!event.key.startsWith("Arrow")) return;
 
   event.preventDefault();
+  if (event.key === "ArrowLeft") {
+    back();
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    forward();
+    return;
+  }
   const from = pinned.value ?? placement.value.root;
   const next = walk(placement.value, from, event.key);
-  if (next) pinned.value = next;
-  else if (!pinned.value) pinned.value = placement.value.root;
+  if (next) select(next);
+  else if (!pinned.value) select(placement.value.root);
 }
 
 function select(digest: string) {
-  pinned.value = digest;
+  blocked.value = null;
+  const held = lineNodes.value;
+  const known = held.indexOf(digest);
+  if (known >= 0) {
+    cursor.value = known;
+    return;
+  }
+  const current = pinned.value;
+  if (current && placement.value?.parent.get(digest) === current) {
+    lineNodes.value = [...held.slice(0, cursor.value + 1), digest];
+    cursor.value = lineNodes.value.length - 1;
+    return;
+  }
+  const path = ancestry(placement.value, digest);
+  lineNodes.value = path;
+  cursor.value = path.length - 1;
 }
+
+function clearSelection() {
+  lineNodes.value = [];
+  cursor.value = -1;
+  blocked.value = null;
+}
+
+const canBack = computed(() => cursor.value > 0);
+const canForward = computed(
+  () => cursor.value >= 0 && cursor.value < lineNodes.value.length - 1,
+);
+
+function back() {
+  if (canBack.value) {
+    cursor.value -= 1;
+    blocked.value = null;
+  }
+}
+
+function forward() {
+  if (canForward.value) {
+    cursor.value += 1;
+    blocked.value = null;
+    return;
+  }
+  // Nothing remembered ahead, so follow the line played most from here.
+  const next = continuations.value[0];
+  if (next) select(next.edge.child);
+}
+
+function resetLine() {
+  if (lineNodes.value.length) cursor.value = 0;
+  blocked.value = null;
+}
+
+function play(uci: string) {
+  const edge = continuations.value.find((e) => e.edge.uci === uci);
+  if (edge) select(edge.edge.child);
+}
+
+function refuse(square: string) {
+  const node = active.value?.node;
+  const hidden = node?.pruned_children ?? 0;
+  blocked.value = hidden
+    ? `That move is off the mapped tree. ${hidden} ${hidden === 1 ? "reply is" : "replies are"} pruned here, in ${node?.pruned_child_games} ${node?.pruned_child_games === 1 ? "game" : "games"}. Lower min games to walk them.`
+    : `No game of yours continued from ${square} here, so the tree stops.`;
+}
+
+const flipped = computed(() => side.value === "black");
+
+const lastUci = computed(() => {
+  const digest = active.value?.node.digest;
+  if (!placement.value || !digest) return null;
+  const above = placement.value.parent.get(digest);
+  if (!above) return null;
+  const edge = placement.value.outgoing
+    .get(above)
+    ?.find((e) => e.edge.child === digest);
+  return edge?.edge.uci ?? null;
+});
 
 onMounted(() => {
   window.addEventListener("keydown", onKey);
@@ -450,7 +539,8 @@ onBeforeUnmount(() => {
       >
         <span class="dot" />
         <span v-if="authStatus?.connected">
-          {{ authStatus.username ?? "Signed in" }} &middot; {{ authStatus.export_rate }}/s
+          {{ authStatus.username ?? "Signed in" }} &middot;
+          {{ authStatus.export_rate }}/s
         </span>
         <span v-else>Sign in for faster imports</span>
       </button>
@@ -469,28 +559,35 @@ onBeforeUnmount(() => {
 
       <Segmented v-model="side" label="Playing" :options="SIDES" />
       <Stepper v-model="maxPly" label="Depth" :min="2" :max="30" />
-      <Stepper v-model="minVolume" label="Min games" :min="1" :max="250" :step="volumeStep" />
+      <Stepper
+        v-model="minVolume"
+        label="Min games"
+        :min="1"
+        :max="250"
+        :step="volumeStep"
+      />
       <Stepper v-model="maxChildren" label="Branches" :min="1" :max="12" />
 
       <p v-if="graph" class="counts num">
         {{ graph.nodes.length }} positions &middot; {{ graph.edges.length }} of
         {{ graph.considered_edges }} moves
       </p>
-      <div v-if="graph && !empty" class="analyse">
-        <button
-          type="button"
-          :disabled="annotationState === 'running'"
-          @click="analyseMoves"
-        >
-          {{ annotationState === "ready" ? "Re-check moves" : "Check moves against the engine" }}
-        </button>
+      <div v-if="phase && phase.positions_scored > 0" class="phase">
+        <span class="eyebrow">Opening phase</span>
+        <p class="book num">Book runs to move {{ phase.book_depth }}</p>
+        <p class="note">
+          {{ Math.round(phase.clean_share * 100) }}% of your opening moves stay
+          within {{ (phase.band_cp / 100).toFixed(2) }}, across
+          {{ phase.moves_scored }} moves
+        </p>
         <p v-if="annotationNote" class="note">{{ annotationNote }}</p>
       </div>
 
       <p class="hint">
-        A branch takes up as much of the circle as it took of your games. Rings count moves,
-        amber ticks mark pruned replies, dashes join lines that transpose. Arrow keys walk the
-        tree.
+        A branch takes up as much of the circle as it took of your games. Rings
+        count moves, amber ticks mark pruned replies, dashes join lines that
+        transpose. Play moves on the board, or walk the line with the arrow
+        keys.
       </p>
     </section>
 
@@ -525,9 +622,19 @@ onBeforeUnmount(() => {
         :explaining="explaining"
         :explanation-error="explanationError"
         class="inspector-slot"
-        @go="pinned = $event"
-        @close="pinned = null"
+        :flipped="flipped"
+        :last-uci="lastUci"
+        :can-back="canBack"
+        :can-forward="canForward"
+        :blocked="blocked"
+        @go="select"
+        @close="clearSelection"
         @analyse="requestAnalysis"
+        @play="play"
+        @blocked="refuse"
+        @back="back"
+        @forward="forward"
+        @reset="resetLine"
       />
     </Transition>
 
@@ -544,7 +651,10 @@ onBeforeUnmount(() => {
     <div v-if="missing" class="notice material" role="alert">
       <span class="eyebrow">Not imported yet</span>
       <p>Import {{ username }}'s games from lichess, then load again.</p>
-      <code class="num">python -m fiftymoves.tools.ingest_lichess {{ username }} --out data</code>
+      <code class="num"
+        >python -m fiftymoves.tools.ingest_lichess {{ username }} --out
+        data</code
+      >
     </div>
 
     <div v-else-if="error" class="notice material" role="alert">
@@ -555,8 +665,8 @@ onBeforeUnmount(() => {
     <div v-else-if="empty" class="notice material">
       <span class="eyebrow">Nothing to map</span>
       <p>
-        No line reaches {{ minVolume }} games at this depth. Lower min games, or import more of
-        {{ username }}'s games.
+        No line reaches {{ minVolume }} games at this depth. Lower min games, or
+        import more of {{ username }}'s games.
       </p>
     </div>
   </div>
@@ -623,7 +733,9 @@ h1 {
   border-radius: var(--r-control);
   font-size: 11px;
   color: var(--muted);
-  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+  transition:
+    color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
 }
 .account-button:hover {
   color: var(--text);
@@ -684,31 +796,21 @@ input:focus {
   left: 16px;
   bottom: 16px;
 }
-.analyse {
+.phase {
   display: grid;
-  gap: 5px;
+  gap: 3px;
   padding-top: 9px;
   border-top: 1px solid var(--line);
 }
-.analyse button {
-  padding: 5px 9px;
-  background: var(--accent-sunk);
-  border: 1px solid var(--line);
-  border-radius: var(--r-control);
-  font-size: 11.5px;
+.phase .book {
+  margin: 1px 0 2px;
+  font-size: 13px;
   color: var(--accent-bright);
-  transition: background 0.15s var(--ease);
 }
-.analyse button:hover:not(:disabled) {
-  background: rgba(139, 108, 239, 0.26);
-}
-.analyse button:disabled {
-  color: var(--faint);
-  cursor: default;
-}
-.analyse .note {
+.phase .note {
   margin: 0;
   font-size: 10.5px;
+  line-height: 1.45;
   color: var(--faint);
 }
 .hint {
@@ -750,7 +852,9 @@ input:focus {
 
 .rise-enter-active,
 .rise-leave-active {
-  transition: opacity 0.22s var(--ease), transform 0.22s var(--ease);
+  transition:
+    opacity 0.22s var(--ease),
+    transform 0.22s var(--ease);
 }
 .rise-enter-from,
 .rise-leave-to {

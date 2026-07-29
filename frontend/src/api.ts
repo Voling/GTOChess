@@ -11,6 +11,7 @@ export interface GraphNode {
   family: string | null;
   family_share: number;
   score: number;
+  rating: number | null;
   opening: number | null;
 }
 
@@ -72,7 +73,9 @@ export function fetchAuthStatus(): Promise<AuthStatus> {
 }
 
 export function startAuth(): Promise<{ authorize_url: string; state: string }> {
-  return post<{ authorize_url: string; state: string }>("/api/auth/lichess/start");
+  return post<{ authorize_url: string; state: string }>(
+    "/api/auth/lichess/start",
+  );
 }
 
 export function completeAuth(code: string, state: string): Promise<AuthStatus> {
@@ -84,12 +87,22 @@ export async function disconnectAuth(): Promise<void> {
   await fetch("/api/auth/lichess", { method: "DELETE" });
 }
 
-export function startImport(username: string, maxGames?: number): Promise<ImportJob> {
-  const params = new URLSearchParams(maxGames ? { max_games: String(maxGames) } : {});
-  return post<ImportJob>(`/api/players/${encodeURIComponent(username)}/import?${params}`);
+export function startImport(
+  username: string,
+  maxGames?: number,
+): Promise<ImportJob> {
+  const params = new URLSearchParams(
+    maxGames ? { max_games: String(maxGames) } : {},
+  );
+  return post<ImportJob>(
+    `/api/players/${encodeURIComponent(username)}/import?${params}`,
+  );
 }
 
-export function fetchImportJob(jobId: string, username: string): Promise<ImportJob> {
+export function fetchImportJob(
+  jobId: string,
+  username: string,
+): Promise<ImportJob> {
   const params = new URLSearchParams({ username });
   return get<ImportJob>(`/api/imports/${jobId}?${params}`);
 }
@@ -99,28 +112,49 @@ export type MoveQuality = "??" | "?" | "?!" | "sound";
 export interface MoveAnnotation {
   parent: string;
   child: string;
+  uci: string;
   san: string;
   quality: MoveQuality;
   loss_cp: number;
   best_san: string;
   games: number;
-  by_player: boolean;
-}
-
-export interface AnnotationSet {
-  username: string;
-  shape: string;
-  annotations: MoveAnnotation[];
-  positions_searched: number;
-  edges_considered: number;
   depth: number;
-  truncated: boolean;
 }
 
-export interface AnnotationResponse {
-  state: "ready" | "missing";
-  shape: string;
-  annotations?: AnnotationSet;
+export interface CostResponse {
+  priced_moves: number;
+  flagged: number;
+  marks: MoveAnnotation[];
+}
+
+export interface MoveAccuracy {
+  full_move: number;
+  positions: number;
+  played: number;
+  mean_loss_cp: number;
+  clean_share: number;
+}
+
+export interface FamilyBook {
+  key: string;
+  name: string;
+  games: number;
+  positions: number;
+  by_move: MoveAccuracy[];
+  raw_depth: number;
+  book_depth: number;
+  clean_share: number;
+  mean_loss_cp: number;
+}
+
+export interface OpeningPhase {
+  families: FamilyBook[];
+  book_depth: number;
+  clean_share: number;
+  mean_loss_cp: number;
+  positions_scored: number;
+  moves_scored: number;
+  band_cp: number;
 }
 
 export interface Claim {
@@ -198,7 +232,9 @@ function shapeParams(query: GraphQuery): URLSearchParams {
 async function send<T>(path: string, method: string): Promise<T> {
   const response = await fetch(path, { method });
   if (!response.ok) {
-    const detail = await response.json().catch(() => ({ detail: response.statusText }));
+    const detail = await response
+      .json()
+      .catch(() => ({ detail: response.statusText }));
     throw new GraphError(
       detail.detail ?? `The server answered ${response.status}.`,
       response.status,
@@ -217,25 +253,32 @@ function post<T>(path: string): Promise<T> {
 
 export function fetchGraph(query: GraphQuery): Promise<RepertoireGraph> {
   const user = encodeURIComponent(query.username);
-  return get<RepertoireGraph>(`/api/players/${user}/graph?${shapeParams(query)}`);
-}
-
-export function fetchAnnotations(query: GraphQuery): Promise<AnnotationResponse> {
-  const user = encodeURIComponent(query.username);
-  return get<AnnotationResponse>(`/api/players/${user}/annotations?${shapeParams(query)}`);
-}
-
-export async function startAnnotation(query: GraphQuery): Promise<{ job_id: string }> {
-  const user = encodeURIComponent(query.username);
-  const response = await fetch(
-    `/api/players/${user}/annotations?${shapeParams(query)}`,
-    { method: "POST" },
+  return get<RepertoireGraph>(
+    `/api/players/${user}/graph?${shapeParams(query)}`,
   );
-  if (!response.ok) {
-    const detail = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new GraphError(detail.detail ?? "could not start the analysis", response.status);
-  }
-  return response.json();
+}
+
+export function fetchCosts(query: GraphQuery): Promise<CostResponse> {
+  const user = encodeURIComponent(query.username);
+  return get<CostResponse>(`/api/players/${user}/costs?${shapeParams(query)}`);
+}
+
+export function fetchOpeningPhase(query: GraphQuery): Promise<OpeningPhase> {
+  const user = encodeURIComponent(query.username);
+  return get<OpeningPhase>(
+    `/api/players/${user}/opening-phase?${shapeParams(query)}`,
+  );
+}
+
+export function explainMove(
+  query: GraphQuery,
+  digest: string,
+  uci: string,
+): Promise<Explanation> {
+  const user = encodeURIComponent(query.username);
+  return post<Explanation>(
+    `/api/players/${user}/positions/${digest}/moves/${uci}/explanation`,
+  );
 }
 
 export interface StoredExplanation {
@@ -250,11 +293,16 @@ export function fetchExplanation(
   digest: string,
 ): Promise<StoredExplanation> {
   const user = encodeURIComponent(query.username);
-  return get<StoredExplanation>(`/api/players/${user}/positions/${digest}/explanation`);
+  return get<StoredExplanation>(
+    `/api/players/${user}/positions/${digest}/explanation`,
+  );
 }
 
 /** Spends a model call, once per position, then shared by everyone. */
-export function requestExplanation(query: GraphQuery, digest: string): Promise<Explanation> {
+export function requestExplanation(
+  query: GraphQuery,
+  digest: string,
+): Promise<Explanation> {
   const user = encodeURIComponent(query.username);
   const path = `/api/players/${user}/positions/${digest}/explanation`;
   return post<Explanation>(`${path}?${shapeParams(query)}`);

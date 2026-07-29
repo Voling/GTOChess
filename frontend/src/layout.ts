@@ -50,7 +50,11 @@ interface TreeDatum {
   children: TreeDatum[];
 }
 
-const EMPTY_TRAIL: Trail = { active: false, nodes: new Set(), edges: new Set() };
+const EMPTY_TRAIL: Trail = {
+  active: false,
+  nodes: new Set(),
+  edges: new Set(),
+};
 const INNER_RING = 0.24;
 const VOLUME_WEIGHT = 0.72;
 
@@ -91,7 +95,9 @@ function spanningTree(graph: RepertoireGraph): {
 
   const build = (digest: string): TreeDatum => {
     const datum: TreeDatum = { node: byDigest.get(digest)!, children: [] };
-    const outgoing = (childrenOf.get(digest) ?? []).slice().sort((a, b) => b.games - a.games);
+    const outgoing = (childrenOf.get(digest) ?? [])
+      .slice()
+      .sort((a, b) => b.games - a.games);
     const kids: string[] = [];
     for (const edge of outgoing) {
       if (claimed.has(edge.child)) {
@@ -111,7 +117,10 @@ function spanningTree(graph: RepertoireGraph): {
 }
 
 function maxDepth(datum: TreeDatum, depth = 0): number {
-  return datum.children.reduce((deepest, child) => Math.max(deepest, maxDepth(child, depth + 1)), depth);
+  return datum.children.reduce(
+    (deepest, child) => Math.max(deepest, maxDepth(child, depth + 1)),
+    depth,
+  );
 }
 
 export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
@@ -140,7 +149,9 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   base.ringGap = (radius * (1 - INNER_RING)) / spread;
 
   const ringAt = (depth: number) =>
-    depth === 0 ? 0 : radius * (INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread));
+    depth === 0
+      ? 0
+      : radius * (INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread));
 
   const place = (datum: TreeDatum, depth: number, from: number, to: number) => {
     const node = datum.node;
@@ -166,7 +177,8 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
     const width = to - from;
     let cursor = from;
     for (const kid of kids) {
-      const share = VOLUME_WEIGHT * (kid.node.games / played) + (1 - VOLUME_WEIGHT) * even;
+      const share =
+        VOLUME_WEIGHT * (kid.node.games / played) + (1 - VOLUME_WEIGHT) * even;
       const next = cursor + width * share;
       place(kid, depth + 1, cursor, next);
       cursor = next;
@@ -200,7 +212,8 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   for (const edge of graph.edges) collect(edge, false);
   for (const edge of extra) collect(edge, true);
 
-  for (const bucket of outgoing.values()) bucket.sort((a, b) => b.edge.games - a.edge.games);
+  for (const bucket of outgoing.values())
+    bucket.sort((a, b) => b.edge.games - a.edge.games);
 
   base.nodes = [...byDigest.values()];
   base.rings = [...ringRadius.entries()]
@@ -211,8 +224,12 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   return base;
 }
 
-export function pathTo(placement: Placement | null, digest: string | null): Trail {
-  if (!placement || !digest || !placement.byDigest.has(digest)) return EMPTY_TRAIL;
+export function pathTo(
+  placement: Placement | null,
+  digest: string | null,
+): Trail {
+  if (!placement || !digest || !placement.byDigest.has(digest))
+    return EMPTY_TRAIL;
   if (digest === placement.root) return EMPTY_TRAIL;
   const nodes = new Set<string>([digest]);
   const edges = new Set<string>();
@@ -227,7 +244,29 @@ export function pathTo(placement: Placement | null, digest: string | null): Trai
   return { active: true, nodes, edges };
 }
 
-export function walk(placement: Placement, digest: string, key: string): string | null {
+export function ancestry(
+  placement: Placement | null,
+  digest: string | null,
+): string[] {
+  if (!placement || !digest || !placement.byDigest.has(digest)) return [];
+  const path = [digest];
+  const seen = new Set(path);
+  let current = digest;
+  while (true) {
+    const above = placement.parent.get(current);
+    if (!above || seen.has(above)) break;
+    path.unshift(above);
+    seen.add(above);
+    current = above;
+  }
+  return path;
+}
+
+export function walk(
+  placement: Placement,
+  digest: string,
+  key: string,
+): string | null {
   if (key === "ArrowLeft") return placement.parent.get(digest) ?? null;
   if (key === "ArrowRight") return placement.children.get(digest)?.[0] ?? null;
 

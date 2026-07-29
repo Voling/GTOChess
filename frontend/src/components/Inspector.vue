@@ -17,9 +17,23 @@ const props = defineProps<{
   explanation: Explanation | null;
   explaining: boolean;
   explanationError: string | null;
+  flipped: boolean;
+  lastUci: string | null;
+  canBack: boolean;
+  canForward: boolean;
+  blocked: string | null;
 }>();
 
-const emit = defineEmits<{ go: [digest: string]; close: []; analyse: [] }>();
+const emit = defineEmits<{
+  go: [digest: string];
+  close: [];
+  analyse: [];
+  play: [uci: string];
+  blocked: [square: string];
+  back: [];
+  forward: [];
+  reset: [];
+}>();
 
 const line = computed(() => {
   const path = props.placed.node.san_path;
@@ -32,7 +46,17 @@ const line = computed(() => {
   return parts.join(" ");
 });
 
-const toMove = computed(() => (props.placed.node.epd.split(" ")[1] === "b" ? "Black" : "White"));
+const toMove = computed(() =>
+  props.placed.node.epd.split(" ")[1] === "b" ? "Black" : "White",
+);
+
+const boardMoves = computed(() =>
+  props.continuations.map((e) => ({
+    uci: e.edge.uci,
+    san: e.edge.san,
+    child: e.edge.child,
+  })),
+);
 
 const share = (edge: PlacedEdge) =>
   Math.round((edge.edge.games / Math.max(props.placed.node.games, 1)) * 100);
@@ -42,12 +66,52 @@ const share = (edge: PlacedEdge) =>
   <aside class="inspector material">
     <header>
       <span class="eyebrow">Position</span>
-      <button v-if="pinned" type="button" aria-label="Clear selection" @click="emit('close')">
+      <span class="num ply">{{ placed.node.depth_ply }} ply</span>
+      <button
+        v-if="pinned"
+        type="button"
+        aria-label="Clear selection"
+        @click="emit('close')"
+      >
         &times;
       </button>
     </header>
 
-    <MiniBoard :epd="placed.node.epd" :size="240" />
+    <div class="stage">
+      <MiniBoard
+        :epd="placed.node.epd"
+        :size="316"
+        :moves="boardMoves"
+        :flipped="flipped"
+        :last-uci="lastUci"
+        @play="emit('play', $event)"
+        @blocked="emit('blocked', $event)"
+      />
+      <nav>
+        <button
+          type="button"
+          :disabled="!canBack"
+          aria-label="Back"
+          @click="emit('back')"
+        >
+          &#8592;
+        </button>
+        <button
+          type="button"
+          :disabled="!canForward"
+          aria-label="Forward"
+          @click="emit('forward')"
+        >
+          &#8594;
+        </button>
+        <button type="button" class="reset" @click="emit('reset')">
+          Reset
+        </button>
+        <span class="num turn">{{ toMove }} to move</span>
+      </nav>
+    </div>
+
+    <p v-if="blocked" class="blocked">{{ blocked }}</p>
 
     <p v-if="family" class="family">
       <span
@@ -71,8 +135,8 @@ const share = (edge: PlacedEdge) =>
         <dd class="num">{{ Math.round(placed.node.score * 100) }}%</dd>
       </div>
       <div>
-        <dt>To move</dt>
-        <dd>{{ toMove }}</dd>
+        <dt>Opponents</dt>
+        <dd class="num">{{ placed.node.rating ?? "n/a" }}</dd>
       </div>
     </dl>
 
@@ -93,11 +157,13 @@ const share = (edge: PlacedEdge) =>
       {{ placed.node.pruned_children }} more
       {{ placed.node.pruned_children === 1 ? "reply" : "replies" }} here, in
       {{ placed.node.pruned_child_games }}
-      {{ placed.node.pruned_child_games === 1 ? "game" : "games" }}. Lower min games to show them.
+      {{ placed.node.pruned_child_games === 1 ? "game" : "games" }}. Lower min
+      games to show them.
     </p>
 
     <p v-if="previewing" class="preview">
-      Click to analyse this position. Move away and the one you picked comes back.
+      Click to analyse this position. Move away and the one you picked comes
+      back.
     </p>
 
     <ExplanationPanel
@@ -112,20 +178,68 @@ const share = (edge: PlacedEdge) =>
 
 <style scoped>
 .inspector {
-  width: 268px;
+  width: 348px;
   padding: 14px;
   display: grid;
-  gap: 12px;
+  gap: 11px;
   justify-items: stretch;
   max-height: calc(100vh - 32px);
   overflow-y: auto;
 }
+.stage {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+nav {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+nav button {
+  padding: 3px 9px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: 12px;
+  color: var(--muted);
+  transition:
+    color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+nav button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+nav button:disabled {
+  color: var(--line-strong);
+  cursor: default;
+}
+nav .reset {
+  font-size: 11px;
+}
+nav .turn {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+.blocked {
+  margin: 0;
+  padding: 6px 8px;
+  background: rgba(216, 167, 90, 0.1);
+  border: 1px solid rgba(216, 167, 90, 0.3);
+  border-radius: var(--r-control);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--amber);
+}
 .family {
-  margin: -4px 0 -4px;
+  margin: -2px 0;
   display: flex;
   align-items: baseline;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text);
 }
 .named {
@@ -149,7 +263,12 @@ const share = (edge: PlacedEdge) =>
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+}
+header .ply {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--faint);
 }
 header button {
   width: 20px;
@@ -190,7 +309,7 @@ dt {
 }
 dd {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
 }
 section {
@@ -202,14 +321,15 @@ ul {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 2px;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
 }
 li button {
   width: 100%;
   display: grid;
-  grid-template-columns: 42px 1fr auto;
+  grid-template-columns: 40px 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   padding: 4px 6px;
   border-radius: 6px;
   text-align: left;
