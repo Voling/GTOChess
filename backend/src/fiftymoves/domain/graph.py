@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from fiftymoves.domain.games import Side
 from fiftymoves.domain.models import Variant
 from fiftymoves.domain.openings import OpeningFamily
 
@@ -40,6 +41,7 @@ class GraphEdge(BaseModel):
 
 class RepertoireGraph(BaseModel):
     root: str
+    side: Side
     nodes: tuple[GraphNode, ...]
     edges: tuple[GraphEdge, ...]
     families: tuple[OpeningFamily, ...]

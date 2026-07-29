@@ -12,6 +12,17 @@ class GameSource(StrEnum):
     CHESSCOM = "chesscom"
 
 
+class Side(StrEnum):
+    WHITE = "white"
+    BLACK = "black"
+    BOTH = "both"
+
+    def covers(self, player_is_white: bool) -> bool:
+        if self is Side.BOTH:
+            return True
+        return (self is Side.WHITE) == player_is_white
+
+
 class GameRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

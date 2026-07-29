@@ -4,7 +4,7 @@ from typing import Any
 
 import chess
 
-from fiftymoves.domain.games import GameRecord, GameSource
+from fiftymoves.domain.games import GameRecord, GameSource, Side
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import Variant
 from fiftymoves.ingest.graph import build_graph
@@ -88,6 +88,59 @@ class TestStructure:
         )
         root = next(n for n in graph.nodes if n.digest == graph.root)
         assert root.games == 1
+
+
+class TestSide:
+    def test_white_only_keeps_the_games_played_as_white(self) -> None:
+        games = [game("w", "e4 e5"), game("b", "d4 d5", player_is_white=False)]
+        graph = build_graph(games, side=Side.WHITE)
+        root = next(n for n in graph.nodes if n.digest == graph.root)
+        assert root.games == 1
+        assert {e.san for e in graph.edges if e.parent == graph.root} == {"e4"}
+
+    def test_black_only_keeps_the_games_played_as_black(self) -> None:
+        games = [game("w", "e4 e5"), game("b", "d4 d5", player_is_white=False)]
+        graph = build_graph(games, side=Side.BLACK)
+        assert {e.san for e in graph.edges if e.parent == graph.root} == {"d4"}
+
+    def test_both_keeps_everything(self) -> None:
+        games = [game("w", "e4 e5"), game("b", "d4 d5", player_is_white=False)]
+        graph = build_graph(games, side=Side.BOTH)
+        root = next(n for n in graph.nodes if n.digest == graph.root)
+        assert root.games == 2
+
+    def test_the_side_is_reported_back(self) -> None:
+        assert build_graph([game("a", "e4")], side=Side.BLACK).side is Side.BLACK
+
+    def test_as_white_the_player_moves_on_white_turns(self) -> None:
+        graph = build_graph([game("a", "e4 e5")], side=Side.WHITE)
+        root = next(n for n in graph.nodes if n.digest == graph.root)
+        after_e4 = next(n for n in graph.nodes if n.san_path == ("e4",))
+        assert root.player_to_move is True
+        assert after_e4.player_to_move is False
+
+    def test_as_black_the_player_moves_on_black_turns(self) -> None:
+        games = [game("a", "e4 e5", player_is_white=False)]
+        graph = build_graph(games, side=Side.BLACK)
+        root = next(n for n in graph.nodes if n.digest == graph.root)
+        after_e4 = next(n for n in graph.nodes if n.san_path == ("e4",))
+        assert root.player_to_move is False
+        assert after_e4.player_to_move is True
+
+    def test_families_are_measured_within_the_selected_side(self) -> None:
+        white = [game(f"w{i}", "e4 e5") for i in range(6)]
+        black = [
+            game(
+                f"b{i}",
+                "d4 d5",
+                player_is_white=False,
+                opening_name="Queen's Gambit Declined: Ragozin",
+                eco="D38",
+            )
+            for i in range(6)
+        ]
+        graph = build_graph(white + black, side=Side.WHITE, family_min_games=4)
+        assert [f.name for f in graph.families] == ["Italian Game"]
 
 
 class TestPruning:

@@ -7,17 +7,26 @@ import {
   type Explanation,
   type GraphQuery,
   type RepertoireGraph,
+  type Side,
 } from "./api";
 import { slotIndex } from "./families";
 import { pathTo, placeRadial, walk, type PlacedNode } from "./layout";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
+import Segmented from "./components/Segmented.vue";
 import Stepper from "./components/Stepper.vue";
+
+const SIDES: { value: Side; label: string }[] = [
+  { value: "white", label: "White" },
+  { value: "black", label: "Black" },
+  { value: "both", label: "Both" },
+];
 
 const RADIUS = 430;
 
 const username = ref("dylanette");
+const side = ref<Side>("white");
 const maxPly = ref(10);
 const minVolume = ref(2);
 const maxChildren = ref(4);
@@ -40,6 +49,7 @@ const slots = computed(() => (graph.value ? slotIndex(graph.value) : new Map<str
 
 const query = computed<GraphQuery>(() => ({
   username: username.value,
+  side: side.value,
   maxPly: maxPly.value,
   minVolume: minVolume.value,
   maxChildren: maxChildren.value,
@@ -74,12 +84,7 @@ async function load() {
   error.value = null;
   missing.value = false;
   try {
-    const result = await fetchGraph({
-      username: username.value,
-      maxPly: maxPly.value,
-      minVolume: minVolume.value,
-      maxChildren: maxChildren.value,
-    });
+    const result = await fetchGraph(query.value);
     if (mine !== request) return;
     graph.value = result;
     pinned.value = result.root;
@@ -109,7 +114,7 @@ function rename(event: Event) {
   load();
 }
 
-watch([maxPly, minVolume, maxChildren], schedule);
+watch([side, maxPly, minVolume, maxChildren], schedule);
 
 let explainRequest = 0;
 let explainTimer: number | undefined;
@@ -213,6 +218,7 @@ onBeforeUnmount(() => {
         />
       </label>
 
+      <Segmented v-model="side" label="Playing" :options="SIDES" />
       <Stepper v-model="maxPly" label="Depth" :min="2" :max="30" />
       <Stepper v-model="minVolume" label="Min games" :min="1" :max="40" />
       <Stepper v-model="maxChildren" label="Branches" :min="1" :max="12" />
@@ -222,8 +228,9 @@ onBeforeUnmount(() => {
         {{ graph.considered_edges }} moves
       </p>
       <p class="hint">
-        Rings count moves, amber ticks mark pruned replies, dashes join lines that transpose.
-        Arrow keys walk the tree.
+        A branch takes up as much of the circle as it took of your games. Rings count moves,
+        amber ticks mark pruned replies, dashes join lines that transpose. Arrow keys walk the
+        tree.
       </p>
     </section>
 

@@ -8,6 +8,7 @@ import pytest
 from fiftymoves.analysis.landscape import compute_landscape
 from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.domain.explanations import Claim, Evidence, EvidenceKind, Explanation
+from fiftymoves.domain.games import Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import Variant
@@ -18,6 +19,8 @@ from fiftymoves.llm.explain import (
     cache_key,
     explain_position,
     ground,
+    study_key,
+    study_position,
 )
 from fiftymoves.llm.facts import build_evidence, mover_cp
 from fiftymoves.llm.provider import (
@@ -230,6 +233,20 @@ class TestCache:
         stub = StubProvider(Draft(headline="h", claims=()))
         assert cache_key("d", "v1", stub) != cache_key("d", "v1", DeterministicProvider())
 
+    def test_the_key_separates_colours(self) -> None:
+        provider = DeterministicProvider()
+        white = cache_key("d", "v1", provider, Side.WHITE)
+        black = cache_key("d", "v1", provider, Side.BLACK)
+        assert white != black
+        assert white != cache_key("d", "v1", provider, Side.BOTH)
+
+    def test_the_engine_study_is_shared_across_colours(self) -> None:
+        assert study_key("d", "v1", 18, 12) == study_key("d", "v1", 18, 12)
+
+    def test_the_engine_study_separates_search_depths(self) -> None:
+        assert study_key("d", "v1", 18, 12) != study_key("d", "v1", 20, 12)
+        assert study_key("d", "v1", 18, 12) != study_key("d", "v1", 18, 14)
+
 
 class TestExplainPosition:
     def test_it_grounds_the_draft_against_the_facts_it_gathered(self) -> None:
@@ -256,6 +273,18 @@ class TestExplainPosition:
         assert [c.text for c in explanation.claims] == ["real"]
         assert explanation.dropped_claims == 1
         assert explanation.model == "stub-1"
+
+    def test_a_prepared_study_means_no_engine_is_needed(self) -> None:
+        board = chess.Board(MATE_IN_ONE)
+        study = study_position(board, engine=ReferenceEngine(), depth=3, ablation_depth=2)
+        provider = StubProvider(Draft(headline="h", claims=(Claim(text="a", evidence_id="eval"),)))
+        explanation = explain_position(board, provider=provider, digest="abc", study=study)
+        assert explanation.claims[0].text == "a"
+
+    def test_without_an_engine_or_a_study_it_refuses(self) -> None:
+        provider = StubProvider(Draft(headline="h", claims=()))
+        with pytest.raises(ValueError):
+            explain_position(chess.Board(), provider=provider, digest="abc")
 
 
 class TestProviderSelection:

@@ -59,6 +59,7 @@ export interface GraphEdge {
 
 export interface RepertoireGraph {
   root: string;
+  side: Side;
   nodes: GraphNode[];
   edges: GraphEdge[];
   families: OpeningFamily[];
@@ -67,8 +68,11 @@ export interface RepertoireGraph {
   considered_edges: number;
 }
 
+export type Side = "white" | "black" | "both";
+
 export interface GraphQuery {
   username: string;
+  side: Side;
   maxPly: number;
   minVolume: number;
   maxChildren: number;
@@ -86,6 +90,7 @@ export class GraphError extends Error {
 
 function shapeParams(query: GraphQuery): URLSearchParams {
   return new URLSearchParams({
+    side: query.side,
     max_ply: String(query.maxPly),
     min_volume: String(query.minVolume),
     max_children: String(query.maxChildren),

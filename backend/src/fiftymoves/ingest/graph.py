@@ -6,7 +6,7 @@ from collections.abc import Sequence
 import chess
 
 from fiftymoves.analysis.openings import build_families, dominant, family_key
-from fiftymoves.domain.games import GameRecord
+from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import PositionKey, Variant
@@ -18,9 +18,9 @@ class _Node:
         self.depth_ply = depth_ply
         self.san_path = san_path
         self.games: set[str] = set()
-        self.player_to_move = False
         self.families: Counter[str] = Counter()
         self.scores: list[float] = []
+        self.as_white = 0
 
     def observe(self, game: GameRecord, family: str) -> None:
         if game.game_id in self.games:
@@ -28,6 +28,16 @@ class _Node:
         self.games.add(game.game_id)
         self.families[family] += 1
         self.scores.append(game.score)
+        if game.player_is_white:
+            self.as_white += 1
+
+    def player_to_move(self, side: Side) -> bool:
+        white_to_move = self.key.epd.split(" ")[1] == "w"
+        if side is Side.WHITE:
+            return white_to_move
+        if side is Side.BLACK:
+            return not white_to_move
+        return white_to_move == (self.as_white * 2 >= len(self.games))
 
 
 class _Edge:
@@ -43,6 +53,7 @@ class _Edge:
 def build_graph(
     games: Sequence[GameRecord],
     *,
+    side: Side = Side.BOTH,
     max_ply: int = 12,
     min_volume: int = 1,
     max_children: int = 4,
@@ -51,7 +62,11 @@ def build_graph(
     family_prior_games: int = 12,
     family_slots: int = 3,
 ) -> RepertoireGraph:
-    standard = [g for g in games if g.variant is Variant.STANDARD and not g.initial_fen]
+    standard = [
+        g
+        for g in games
+        if g.variant is Variant.STANDARD and not g.initial_fen and side.covers(g.player_is_white)
+    ]
     root_key = position_key(chess.Board())
 
     nodes: dict[str, _Node] = {
@@ -75,7 +90,6 @@ def build_graph(
                 break
 
             by_player = (board.turn == chess.WHITE) == game.player_is_white
-            nodes[parent_digest].player_to_move = by_player
 
             board.push(move)
             path = (*path, san)
@@ -140,7 +154,7 @@ def build_graph(
             variant=node.key.variant,
             depth_ply=node.depth_ply,
             games=len(node.games),
-            player_to_move=node.player_to_move,
+            player_to_move=node.player_to_move(side),
             san_path=node.san_path,
             pruned_children=pruned_children.get(digest, 0),
             pruned_child_games=pruned_games.get(digest, 0),
@@ -165,6 +179,7 @@ def build_graph(
 
     return RepertoireGraph(
         root=root_key.digest,
+        side=side,
         nodes=out_nodes,
         edges=out_edges,
         families=tuple(families),

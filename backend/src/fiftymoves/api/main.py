@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
 from fiftymoves.domain.explanations import Explanation
-from fiftymoves.domain.games import GameRecord
+from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.graph import build_graph
@@ -20,10 +20,15 @@ from fiftymoves.llm.explain import (
     cache_key,
     explain_position,
     get_cache,
+    get_studies,
+    study_key,
+    study_position,
 )
 from fiftymoves.llm.provider import ProviderError
 
 app = FastAPI(title="FiftyMoves", version="0.1.0")
+
+DEFAULT_SIDE = Query(default=Side.WHITE)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,11 +59,12 @@ def player_games(username: str) -> tuple[GameRecord, ...]:
 
 
 def graph_for(
-    username: str, *, max_ply: int, min_volume: int, max_children: int
+    username: str, *, side: Side, max_ply: int, min_volume: int, max_children: int
 ) -> RepertoireGraph:
     settings = get_settings()
     return build_graph(
         player_games(username),
+        side=side,
         max_ply=max_ply,
         min_volume=min_volume,
         max_children=max_children,
@@ -93,23 +99,29 @@ def health() -> dict[str, Any]:
 @app.get("/api/players/{username}/graph", response_model=RepertoireGraph)
 def player_graph(
     username: str,
+    side: Side = DEFAULT_SIDE,
     max_ply: int = Query(default=12, ge=1, le=40),
     min_volume: int = Query(default=1, ge=1),
     max_children: int = Query(default=4, ge=1, le=12),
 ) -> RepertoireGraph:
-    return graph_for(username, max_ply=max_ply, min_volume=min_volume, max_children=max_children)
+    return graph_for(
+        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+    )
 
 
 @app.get("/api/players/{username}/positions/{digest}/explanation", response_model=Explanation)
 def position_explanation(
     username: str,
     digest: str,
+    side: Side = DEFAULT_SIDE,
     max_ply: int = Query(default=12, ge=1, le=40),
     min_volume: int = Query(default=1, ge=1),
     max_children: int = Query(default=4, ge=1, le=12),
 ) -> Explanation:
     settings = get_settings()
-    graph = graph_for(username, max_ply=max_ply, min_volume=min_volume, max_children=max_children)
+    graph = graph_for(
+        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+    )
 
     node = next((n for n in graph.nodes if n.digest == digest), None)
     if node is None:
@@ -124,7 +136,7 @@ def position_explanation(
         api_key=settings.anthropic_credentials(),
     )
     cache = get_cache(settings.llm_cache_entries)
-    key = cache_key(digest, settings.pipeline_version, provider)
+    key = cache_key(digest, settings.pipeline_version, provider, side)
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -138,28 +150,43 @@ def position_explanation(
     family = next((f for f in graph.families if f.key == node.family), None)
     continuations = sorted((e for e in graph.edges if e.parent == digest), key=lambda e: -e.games)
 
-    engine = StockfishEngine(
-        str(engine_path),
-        threads=settings.engine_threads,
-        hash_mb=settings.engine_hash_mb,
+    studies = get_studies(settings.llm_cache_entries)
+    engine_key = study_key(
+        digest, settings.pipeline_version, settings.explain_depth, settings.ablation_depth
     )
+    study = studies.get(engine_key)
+
+    engine = None
     try:
+        if study is None:
+            engine = StockfishEngine(
+                str(engine_path),
+                threads=settings.engine_threads,
+                hash_mb=settings.engine_hash_mb,
+            )
+            study = study_position(
+                board,
+                engine=engine,
+                depth=settings.explain_depth,
+                ablation_depth=settings.ablation_depth,
+                multipv=settings.multipv,
+            )
+            studies.put(engine_key, study)
+
         explanation = explain_position(
             board,
-            engine=engine,
             provider=provider,
             digest=digest,
             node=node,
             family=family,
             continuations=continuations,
-            depth=settings.explain_depth,
-            ablation_depth=settings.ablation_depth,
-            multipv=settings.multipv,
+            study=study,
         )
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
-        engine.close()
+        if engine is not None:
+            engine.close()
 
     cache.put(key, explanation)
     return explanation

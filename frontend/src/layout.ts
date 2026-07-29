@@ -1,4 +1,3 @@
-import { hierarchy, tree } from "d3-hierarchy";
 import type { GraphEdge, GraphNode, RepertoireGraph } from "./api";
 
 export interface PlacedNode {
@@ -9,6 +8,7 @@ export interface PlacedNode {
   radius: number;
   depth: number;
   intensity: number;
+  span: number;
 }
 
 export interface PlacedEdge {
@@ -51,6 +51,7 @@ interface TreeDatum {
 
 const EMPTY_TRAIL: Trail = { active: false, nodes: new Set(), edges: new Set() };
 const INNER_RING = 0.24;
+const VOLUME_WEIGHT = 0.72;
 
 function edgeKey(edge: GraphEdge): string {
   return `${edge.parent}>${edge.child}`;
@@ -108,6 +109,10 @@ function spanningTree(graph: RepertoireGraph): {
   return { root: build(graph.root), extra, parent, children };
 }
 
+function maxDepth(datum: TreeDatum, depth = 0): number {
+  return datum.children.reduce((deepest, child) => Math.max(deepest, maxDepth(child, depth + 1)), depth);
+}
+
 export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   const { root, extra, parent, children } = spanningTree(graph);
   const byDigest = new Map<string, PlacedNode>();
@@ -125,35 +130,46 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   };
   if (!root) return base;
 
-  const laidOut = tree<TreeDatum>()
-    .size([2 * Math.PI, radius])
-    .separation((a, b) => (a.parent === b.parent ? 1 : 2) / Math.max(a.depth, 1))(
-    hierarchy(root, (d) => d.children),
-  );
-
   const maxGames = Math.max(graph.max_games, 1);
   const ceiling = Math.log1p(maxGames);
-  const spread = Math.max(laidOut.height - 1, 1);
+  const spread = Math.max(maxDepth(root) - 1, 1);
   const ringRadius = new Map<number, number>();
 
   const ringAt = (depth: number) =>
     depth === 0 ? 0 : radius * (INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread));
 
-  laidOut.each((point) => {
-    const node = point.data.node;
-    const angle = point.x - Math.PI / 2;
-    const distance = ringAt(point.depth);
+  const place = (datum: TreeDatum, depth: number, from: number, to: number) => {
+    const node = datum.node;
+    const angle = (from + to) / 2 - Math.PI / 2;
+    const distance = ringAt(depth);
     byDigest.set(node.digest, {
       node,
       x: Math.cos(angle) * distance,
       y: Math.sin(angle) * distance,
       angle,
       radius: distance,
-      depth: point.depth,
+      depth,
       intensity: Math.log1p(node.games) / ceiling,
+      span: to - from,
     });
-    ringRadius.set(point.depth, distance);
-  });
+    ringRadius.set(depth, distance);
+
+    const kids = datum.children;
+    if (kids.length === 0) return;
+
+    const played = kids.reduce((sum, kid) => sum + kid.node.games, 0) || 1;
+    const even = 1 / kids.length;
+    const width = to - from;
+    let cursor = from;
+    for (const kid of kids) {
+      const share = VOLUME_WEIGHT * (kid.node.games / played) + (1 - VOLUME_WEIGHT) * even;
+      const next = cursor + width * share;
+      place(kid, depth + 1, cursor, next);
+      cursor = next;
+    }
+  };
+
+  place(root, 0, 0, 2 * Math.PI);
 
   const seen = new Set<string>();
   const collect = (edge: GraphEdge, transposition: boolean) => {
