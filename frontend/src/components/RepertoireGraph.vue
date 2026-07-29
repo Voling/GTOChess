@@ -8,6 +8,7 @@ const props = defineProps<{
   placement: Placement;
   trail: Trail;
   activeDigest: string | null;
+  pinnedDigest: string | null;
   slots: Map<string, number>;
   highlighted: string | null;
   annotations: Map<string, MoveAnnotation>;
@@ -225,12 +226,18 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
               dim: !isLit(placed),
               lit: trail.nodes.has(placed.node.digest),
               active: activeDigest === placed.node.digest,
+              picked: pinnedDigest === placed.node.digest,
             }"
             @pointerenter="emit('hover', placed.node.digest)"
             @pointerleave="emit('hover', null)"
             @click="onNodeClick(placed)"
           >
             <circle class="hit" :r="hitRadius(placed)" />
+            <circle
+              v-if="pinnedDigest === placed.node.digest"
+              class="pick-ring"
+              :r="dotRadius(placed) + 4"
+            />
             <circle
               v-if="blooms(placed)"
               class="halo"
@@ -354,6 +361,19 @@ svg.tracing .nodes g.lit .halo {
 .nodes g.active .dot {
   stroke: #ffffff;
   stroke-width: 1.4;
+  opacity: 1;
+}
+.pick-ring {
+  fill: none;
+  stroke: var(--accent-bright);
+  stroke-width: 1.3;
+  pointer-events: none;
+}
+svg.tracing .nodes g .pick-ring {
+  opacity: 0.5;
+}
+svg.tracing .nodes g.lit .pick-ring,
+.nodes g.picked .pick-ring {
   opacity: 1;
 }
 .nodes text {

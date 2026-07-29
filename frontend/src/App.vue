@@ -78,11 +78,16 @@ const query = computed<GraphQuery>(() => ({
   maxChildren: maxChildren.value,
 }));
 
+// Hover previews, the clicked node is what the panel falls back to.
 const active = computed<PlacedNode | null>(() => {
-  const digest = pinned.value ?? hovered.value;
+  const digest = hovered.value ?? pinned.value;
   if (!placement.value || !digest) return null;
   return placement.value.byDigest.get(digest) ?? null;
 });
+
+const previewing = computed(
+  () => active.value !== null && pinned.value !== null && active.value.node.digest !== pinned.value,
+);
 
 const trail = computed(() => pathTo(placement.value, active.value?.node.digest ?? null));
 
@@ -363,7 +368,7 @@ function onKey(event: KeyboardEvent) {
 }
 
 function select(digest: string) {
-  pinned.value = pinned.value === digest ? null : digest;
+  pinned.value = digest;
 }
 
 onMounted(() => {
@@ -389,6 +394,7 @@ onBeforeUnmount(() => {
       :placement="placement"
       :trail="trail"
       :active-digest="active?.node.digest ?? null"
+      :pinned-digest="pinned"
       :slots="slots"
       :highlighted="highlighted"
       :annotations="annotations"
@@ -478,6 +484,7 @@ onBeforeUnmount(() => {
         :placed="active"
         :continuations="continuations"
         :pinned="pinned !== null"
+        :previewing="previewing"
         :family="activeFamily"
         :slots="slots"
         :explanation="explanation"

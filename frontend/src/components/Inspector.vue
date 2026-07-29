@@ -10,6 +10,7 @@ const props = defineProps<{
   placed: PlacedNode;
   continuations: PlacedEdge[];
   pinned: boolean;
+  previewing: boolean;
   family: OpeningFamily | null;
   slots: Map<string, number>;
   explanation: Explanation | null;
@@ -93,8 +94,12 @@ const share = (edge: PlacedEdge) =>
       {{ placed.node.pruned_child_games === 1 ? "game" : "games" }}. Lower min games to show them.
     </p>
 
+    <p v-if="previewing" class="preview">
+      Click to analyse this position. Move away and the one you picked comes back.
+    </p>
+
     <ExplanationPanel
-      v-if="pinned"
+      v-else-if="pinned"
       :explanation="explanation"
       :loading="explaining"
       :error="explanationError"
@@ -230,5 +235,13 @@ li button:hover {
   font-size: 11px;
   line-height: 1.5;
   color: var(--amber);
+}
+.preview {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--faint);
 }
 </style>
