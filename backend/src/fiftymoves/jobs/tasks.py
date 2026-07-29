@@ -12,6 +12,7 @@ from fiftymoves.jobs.notify import deliver
 
 IMPORT_TASK = "fiftymoves.import_player"
 ANNOTATE_TASK = "fiftymoves.annotate_player"
+LEARN_TASK = "fiftymoves.learn_positions"
 
 
 def announce(event: str, body: dict[str, Any]) -> None:
@@ -51,6 +52,93 @@ def import_player(self: Task, username: str, max_games: int | None = None) -> di
 
     body = result.model_dump()
     announce("import.finished", {**body, "job_id": self.request.id})
+    return body
+
+
+@app.task(bind=True, name=LEARN_TASK, max_retries=0)
+def learn_positions(
+    self: Task,
+    username: str,
+    side: str = "white",
+    max_ply: int = 10,
+    min_volume: int = 12,
+    max_children: int = 4,
+) -> dict[str, Any]:
+    """Study the positions a player actually reaches and remember what was found."""
+    import chess
+
+    from fiftymoves.analysis.knowledge import learn_position
+    from fiftymoves.config import EngineNotProvisioned
+    from fiftymoves.domain.games import Side
+    from fiftymoves.engine.stockfish import StockfishEngine
+    from fiftymoves.ingest.graph import build_graph
+    from fiftymoves.ingest.knowledge_store import KnowledgeStore
+    from fiftymoves.ingest.pipeline import load_player_games
+    from fiftymoves.llm.explain import study_position
+
+    settings = get_settings()
+    try:
+        engine_path = settings.resolve_engine_path()
+    except EngineNotProvisioned as exc:
+        return {"username": username, "failed": str(exc).splitlines()[0]}
+
+    games, _ = load_player_games(username, settings.data_dir)
+    if not games:
+        return {"username": username, "failed": f"no games imported for {username!r} yet"}
+
+    graph = build_graph(
+        games,
+        side=Side(side),
+        max_ply=max_ply,
+        min_volume=min_volume,
+        max_children=max_children,
+        family_window_ply=settings.family_window_ply,
+        family_min_games=settings.family_min_games,
+        family_prior_games=settings.family_prior_games,
+        family_slots=settings.family_slots,
+    )
+    store = KnowledgeStore(settings.data_dir)
+
+    # Busiest first, so a budget cut keeps the positions the player lives in.
+    wanted = sorted(graph.nodes, key=lambda n: -n.games)[: settings.knowledge_budget]
+    todo = [n for n in wanted if store.get(n.digest) is None]
+
+    engine = StockfishEngine(
+        str(engine_path), threads=settings.engine_threads, hash_mb=settings.engine_hash_mb
+    )
+    learned = []
+    try:
+        for index, node in enumerate(todo, start=1):
+            board = chess.Board(f"{node.epd} 0 1")
+            study = study_position(
+                board,
+                engine=engine,
+                depth=settings.knowledge_depth,
+                ablation_depth=settings.ablation_depth,
+                multipv=settings.multipv,
+            )
+            learned.append(
+                learn_position(board, node.digest, study.report, study.sensitivity, study.landscape)
+            )
+            if index % 10 == 0:
+                self.update_state(
+                    state="PROGRESS",
+                    meta={"username": username, "studied": index, "total": len(todo)},
+                )
+    finally:
+        engine.close()
+
+    added = store.extend(learned)
+    plans = store.by_plan()
+    body = {
+        "username": username,
+        "studied": len(learned),
+        "added": added,
+        "known_positions": len(store),
+        "distinct_plans": len(plans),
+        "job_id": self.request.id,
+    }
+    announce("knowledge.finished", body)
     return body
 
 

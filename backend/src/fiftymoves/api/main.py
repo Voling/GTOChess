@@ -15,13 +15,15 @@ from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
 from fiftymoves.domain.explanations import Explanation
 from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
+from fiftymoves.domain.knowledge import KnowledgeView, PlanNeighbour
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
 from fiftymoves.ingest.explanation_store import ExplanationStore
 from fiftymoves.ingest.graph import GameWalk, prune_walk, walk_games
+from fiftymoves.ingest.knowledge_store import KnowledgeStore
 from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
 from fiftymoves.ingest.tokens import TokenStore, resolve_token
-from fiftymoves.jobs.tasks import annotate_player, import_player
+from fiftymoves.jobs.tasks import annotate_player, import_player, learn_positions
 from fiftymoves.llm.explain import (
     build_provider,
     cache_key,
@@ -220,6 +222,52 @@ def lichess_auth_callback(code: str = Query(...), state: str = Query(...)) -> di
 @app.delete("/api/auth/lichess", status_code=204)
 def lichess_auth_disconnect() -> None:
     TokenStore.from_settings().clear()
+
+
+@app.post("/api/players/{username}/knowledge", status_code=202)
+def start_learning(
+    username: str,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=12, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=4, ge=1, le=12),
+) -> dict[str, str]:
+    handle = learn_positions.delay(username, side.value, max_ply, min_volume, max_children)
+    return {"job_id": handle.id, "state": "queued"}
+
+
+@app.get("/api/knowledge/{digest}", response_model=KnowledgeView)
+def position_knowledge(
+    digest: str, neighbours: int = Query(default=6, ge=0, le=40)
+) -> KnowledgeView:
+    settings = get_settings()
+    store = KnowledgeStore(settings.data_dir)
+    record = store.get(digest)
+    if record is None:
+        raise HTTPException(status_code=404, detail="this position has not been studied yet")
+
+    steps, kin = store.sharing_prefix(record)
+    return KnowledgeView(
+        position=record,
+        shares_plan_with=tuple(
+            PlanNeighbour(digest=r.digest, epd=r.epd, best_san=r.best_san, best_cp=r.best_cp)
+            for r in kin[:neighbours]
+        ),
+        plan_steps=steps,
+    )
+
+
+@app.get("/api/knowledge")
+def knowledge_summary() -> dict[str, Any]:
+    store = KnowledgeStore(get_settings().data_dir)
+    plans = store.by_plan()
+    shared = {p: rs for p, rs in plans.items() if len(rs) > 1}
+    return {
+        "positions": len(store),
+        "distinct_plans": len(plans),
+        "plans_shared_by_several_positions": len(shared),
+        "path": str(store.path),
+    }
 
 
 @app.get("/api/players/{username}/annotations")

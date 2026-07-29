@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     annotation_min_games: int = 2
     annotation_budget: int = 400
 
+    knowledge_depth: int = 18
+    knowledge_budget: int = 600
+
     database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"
     s3_bucket: str | None = None
