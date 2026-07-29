@@ -8,9 +8,23 @@ from fiftymoves.config import get_settings
 from fiftymoves.ingest.lichess import LichessError
 from fiftymoves.ingest.pipeline import IngestProgress, ingest_player
 from fiftymoves.jobs.app import app
+from fiftymoves.jobs.notify import deliver
 
 IMPORT_TASK = "fiftymoves.import_player"
 ANNOTATE_TASK = "fiftymoves.annotate_player"
+
+
+def announce(event: str, body: dict[str, Any]) -> None:
+    settings = get_settings()
+    if not settings.job_webhook_url:
+        return
+    deliver(
+        settings.job_webhook_url,
+        event,
+        body,
+        secret=settings.job_webhook_secret,
+        timeout_s=settings.job_webhook_timeout_s,
+    )
 
 
 @app.task(bind=True, name=IMPORT_TASK, max_retries=0)
@@ -31,9 +45,13 @@ def import_player(self: Task, username: str, max_games: int | None = None) -> di
         )
     except LichessError as exc:
         # Carried as a plain result so the API can report it without a traceback.
-        return {"username": username, "failed": str(exc)}
+        failure = {"username": username, "failed": str(exc), "job_id": self.request.id}
+        announce("import.failed", failure)
+        return failure
 
-    return result.model_dump()
+    body = result.model_dump()
+    announce("import.finished", {**body, "job_id": self.request.id})
+    return body
 
 
 @app.task(bind=True, name=ANNOTATE_TASK, max_retries=0)
@@ -104,11 +122,14 @@ def annotate_player(
         engine.close()
 
     AnnotationStore(settings.data_dir).write(result)
-    return {
+    body = {
         "username": username,
         "shape": shape,
         "annotated": len(result.annotations),
         "flawed": len(result.flawed),
         "positions_searched": result.positions_searched,
         "truncated": result.truncated,
+        "job_id": self.request.id,
     }
+    announce("annotations.finished", body)
+    return body

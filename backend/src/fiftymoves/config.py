@@ -90,6 +90,10 @@ class Settings(BaseSettings):
 
     job_result_ttl_s: int = 86400
     job_report_every: int = 250
+    # Posted to when a job finishes, so a caller can await an import without polling.
+    job_webhook_url: str | None = None
+    job_webhook_secret: str | None = None
+    job_webhook_timeout_s: float = 10.0
 
     # Opening evaluations differ by tens of centipawns between sound moves, so the
     # floor sits well above the middlegame convention or every repertoire looks bad.

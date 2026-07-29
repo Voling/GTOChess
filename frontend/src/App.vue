@@ -90,6 +90,17 @@ const volumeStep = computed(() => {
   return 25;
 });
 
+// A line played twice out of ten thousand games is noise, not repertoire. Picked
+// once per player and side, and shown in the stepper so it stays adjustable.
+const tuned = new Set<string>();
+
+function openingFloor(corpus: number): number {
+  if (corpus >= 6000) return 25;
+  if (corpus >= 2000) return 12;
+  if (corpus >= 600) return 5;
+  return 2;
+}
+
 let request = 0;
 
 async function load() {
@@ -100,6 +111,17 @@ async function load() {
   try {
     const result = await fetchGraph(query.value);
     if (mine !== request) return;
+
+    const seen = `${username.value}:${side.value}`;
+    if (!tuned.has(seen)) {
+      tuned.add(seen);
+      const floor = openingFloor(result.max_games);
+      if (floor > minVolume.value) {
+        minVolume.value = floor;
+        return;
+      }
+    }
+
     graph.value = result;
     pinned.value = result.root;
     hovered.value = null;

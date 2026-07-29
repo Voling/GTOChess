@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import type { MoveAnnotation } from "../api";
 import { familyColor, HIGHLIGHT, NEUTRAL } from "../families";
 import type { PlacedNode, Placement, Trail } from "../layout";
@@ -41,8 +41,11 @@ const MAX_ZOOM = 6;
 const svgEl = ref<SVGSVGElement | null>(null);
 const view = ref({ k: 1, x: 0, y: 0 });
 
-let drag: { id: number; x: number; y: number } | null = null;
+let drag: { id: number; x: number; y: number; screenX: number; screenY: number } | null = null;
+// Measured in screen pixels; viewBox units scale with the window and would make
+// this threshold swallow ordinary clicks on a wide canvas.
 let travelled = 0;
+const DRAG_SLOP_PX = 6;
 
 watch(
   () => props.placement,
@@ -79,7 +82,13 @@ function onWheel(event: WheelEvent) {
 function onPointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
   const point = toLocal(event);
-  drag = { id: event.pointerId, x: point.x, y: point.y };
+  drag = {
+    id: event.pointerId,
+    x: point.x,
+    y: point.y,
+    screenX: event.clientX,
+    screenY: event.clientY,
+  };
   travelled = 0;
   svgEl.value?.setPointerCapture(event.pointerId);
 }
@@ -87,7 +96,7 @@ function onPointerDown(event: PointerEvent) {
 function onPointerMove(event: PointerEvent) {
   if (!drag || drag.id !== event.pointerId) return;
   const point = toLocal(event);
-  travelled += Math.abs(point.x - drag.x) + Math.abs(point.y - drag.y);
+  travelled += Math.abs(event.clientX - drag.screenX) + Math.abs(event.clientY - drag.screenY);
   view.value = {
     k: view.value.k,
     x: view.value.x + (point.x - drag.x),
@@ -95,6 +104,8 @@ function onPointerMove(event: PointerEvent) {
   };
   drag.x = point.x;
   drag.y = point.y;
+  drag.screenX = event.clientX;
+  drag.screenY = event.clientY;
 }
 
 function onPointerUp(event: PointerEvent) {
@@ -103,7 +114,7 @@ function onPointerUp(event: PointerEvent) {
 }
 
 function onNodeClick(placed: PlacedNode) {
-  if (travelled > 4) return;
+  if (travelled > DRAG_SLOP_PX) return;
   emit("select", placed.node.digest);
 }
 
@@ -115,7 +126,13 @@ function resetView() {
   view.value = { k: 1, x: 0, y: 0 };
 }
 
-const dotRadius = (placed: PlacedNode) => 2.2 + placed.intensity * 8.5;
+// Dots shrink as the map fills so a busy repertoire stays readable.
+const density = computed(() => {
+  const count = props.placement.nodes.length;
+  return Math.min(1, Math.max(0.5, Math.sqrt(300 / Math.max(count, 1))));
+});
+
+const dotRadius = (placed: PlacedNode) => (2.2 + placed.intensity * 8.5) * density.value;
 const hitRadius = (placed: PlacedNode) => Math.max(dotRadius(placed) + 4, 8);
 const isLit = (placed: PlacedNode) => placed.intensity >= LIT;
 const blooms = (placed: PlacedNode) => placed.intensity >= BLOOM;
@@ -132,20 +149,18 @@ function fillOpacity(placed: PlacedNode): number {
   return 0.45 + 0.55 * placed.intensity;
 }
 
-function labelled(placed: PlacedNode): boolean {
-  return placed.intensity > 0.66 || props.trail.nodes.has(placed.node.digest);
+const LABEL_ROOM = 13;
+
+// Arc length the node owns on its ring. Below a label's height there is nowhere
+// to put text without it landing on a neighbour.
+function room(placed: PlacedNode): number {
+  return placed.depth === 0 ? Infinity : placed.span * Math.max(placed.radius, 1);
 }
 
-function whiskers(placed: PlacedNode): string[] {
-  const count = Math.min(placed.node.pruned_children, 3);
-  const inner = dotRadius(placed) + 2.4;
-  const outer = inner + 4.2;
-  return Array.from({ length: count }, (_, i) => {
-    const angle = placed.angle + (i - (count - 1) / 2) * 0.36;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return `M${cos * inner},${sin * inner}L${cos * outer},${sin * outer}`;
-  });
+function labelled(placed: PlacedNode): boolean {
+  if (props.trail.nodes.has(placed.node.digest)) return true;
+  if (props.activeDigest === placed.node.digest) return true;
+  return placed.intensity > 0.66 && room(placed) >= LABEL_ROOM;
 }
 
 function labelOffset(placed: PlacedNode) {
@@ -228,12 +243,6 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
               :r="dotRadius(placed)"
               :fill="fill(placed)"
               :fill-opacity="fillOpacity(placed)"
-            />
-            <path
-              v-for="(d, i) in whiskers(placed)"
-              :key="i"
-              class="whisker"
-              :d="d"
             />
             <text
               v-if="labelled(placed)"
@@ -346,13 +355,6 @@ svg.tracing .nodes g.lit .halo {
   stroke: #ffffff;
   stroke-width: 1.4;
   opacity: 1;
-}
-.whisker {
-  fill: none;
-  stroke: var(--amber);
-  stroke-width: 0.9;
-  stroke-linecap: round;
-  opacity: 0.6;
 }
 .nodes text {
   fill: var(--muted);
