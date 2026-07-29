@@ -25,10 +25,31 @@ services:
       # so a bind mount can never shadow the verified engine.
       - ./backend/src:/app/src:ro
       - ./backend/tests:/app/tests:ro
-      - ./backend/data:/data:ro
+      - ./backend/data:/data
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      target: dev
+      args:
+        ENGINE_PLATFORM: linux-x86-64
+    platform: linux/amd64
+    command:
+      ["celery", "-A", "fiftymoves.jobs.app", "worker", "--loglevel=info", "--concurrency=2"]
+    environment:
+      FIFTYMOVES_ENGINE_PATH: /opt/stockfish/stockfish
+      FIFTYMOVES_REDIS_URL: redis://redis:6379/0
+      FIFTYMOVES_DATA_DIR: /data
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./backend/src:/app/src:ro
+      - ./backend/data:/data
+    depends_on:
       redis:
         condition: service_healthy
 

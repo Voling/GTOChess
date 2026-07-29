@@ -67,6 +67,9 @@ class Settings(BaseSettings):
 
     lichess_base_url: str = "https://lichess.org"
     lichess_token: str | None = None
+    # Any string identifies a lichess public client; it needs no registration.
+    lichess_client_id: str = "fiftymoves.local"
+    lichess_redirect_uri: str = "http://localhost:5173/auth/lichess/callback"
     lichess_timeout_s: float = 60.0
     lichess_max_retries: int = 4
     lichess_backoff_s: float = 60.0
@@ -84,6 +87,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     # A large import runs to hundreds of megabytes in memory, so this stays small.
     graph_cache_entries: int = 8
+
+    job_result_ttl_s: int = 86400
+    job_report_every: int = 250
 
     database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"

@@ -9,6 +9,7 @@ import chess
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from fiftymoves.api.imports import ImportJob, read_job
 from fiftymoves.cache import LruCache
 from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
 from fiftymoves.domain.explanations import Explanation
@@ -16,6 +17,9 @@ from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.graph import build_graph
+from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
+from fiftymoves.ingest.tokens import TokenStore, resolve_token
+from fiftymoves.jobs.tasks import import_player
 from fiftymoves.llm.explain import (
     build_provider,
     cache_key,
@@ -30,6 +34,7 @@ from fiftymoves.llm.provider import ProviderError
 app = FastAPI(title="FiftyMoves", version="0.1.0")
 
 DEFAULT_SIDE = Query(default=Side.WHITE)
+_pending: LruCache[PendingAuthorization] = LruCache(max_entries=16)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,20 +48,30 @@ def data_dir(settings: Settings) -> Path:
     return settings.data_dir
 
 
+def games_file(username: str) -> Path:
+    return data_dir(get_settings()) / f"{username}.games.jsonl"
+
+
+def import_stamp(username: str) -> int:
+    path = games_file(username)
+    return path.stat().st_mtime_ns if path.exists() else 0
+
+
 @lru_cache(maxsize=2)
-def load_games(username: str, directory: str) -> tuple[GameRecord, ...]:
+def load_games(username: str, directory: str, stamp: int) -> tuple[GameRecord, ...]:
     path = Path(directory) / f"{username}.games.jsonl"
     if not path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"no import for {username!r}; run fiftymoves.tools.ingest_lichess first",
+            detail=f"no games imported for {username!r} yet",
         )
     with path.open(encoding="utf-8") as handle:
         return tuple(GameRecord(**json.loads(line)) for line in handle if line.strip())
 
 
 def player_games(username: str) -> tuple[GameRecord, ...]:
-    return load_games(username, str(data_dir(get_settings())))
+    # The stamp is part of the key so a worker rewriting the file busts the cache.
+    return load_games(username, str(data_dir(get_settings())), import_stamp(username))
 
 
 _graphs: LruCache[RepertoireGraph] | None = None
@@ -74,7 +89,7 @@ def graph_for(
 ) -> RepertoireGraph:
     settings = get_settings()
     graphs = graph_cache()
-    key = f"{username}:{side.value}:{max_ply}:{min_volume}:{max_children}"
+    key = f"{username}:{import_stamp(username)}:{side.value}:{max_ply}:{min_volume}:{max_children}"
     cached = graphs.get(key)
     if cached is not None:
         return cached
@@ -113,6 +128,64 @@ def health() -> dict[str, Any]:
             "credentials": settings.anthropic_credentials() is not None,
         },
     }
+
+
+@app.post("/api/players/{username}/import", response_model=ImportJob, status_code=202)
+def start_import(username: str, max_games: int | None = Query(default=None, ge=1)) -> ImportJob:
+    handle = import_player.delay(username, max_games)
+    return ImportJob(job_id=handle.id, username=username, state="queued")
+
+
+@app.get("/api/imports/{job_id}", response_model=ImportJob)
+def import_status(job_id: str, username: str = Query(default="")) -> ImportJob:
+    handle = import_player.AsyncResult(job_id)
+    return read_job(job_id, username, handle.state, handle.info)
+
+
+@app.get("/api/auth/lichess")
+def lichess_auth_status() -> dict[str, Any]:
+    settings = get_settings()
+    stored = TokenStore.from_settings(settings).read()
+    return {
+        "connected": resolve_token(settings) is not None,
+        "source": "env" if settings.lichess_token else ("oauth" if stored else None),
+        "username": stored.username if stored else None,
+        "export_rate": 60 if resolve_token(settings) else 20,
+    }
+
+
+@app.post("/api/auth/lichess/start")
+def lichess_auth_start() -> dict[str, str]:
+    oauth = LichessOAuth.from_settings()
+    try:
+        url, pending = oauth.start()
+    finally:
+        oauth.close()
+    _pending.put(pending.state, pending)
+    return {"authorize_url": url, "state": pending.state}
+
+
+@app.post("/api/auth/lichess/callback")
+def lichess_auth_callback(code: str = Query(...), state: str = Query(...)) -> dict[str, Any]:
+    pending = _pending.get(state)
+    if pending is None:
+        raise HTTPException(status_code=400, detail="that sign in attempt expired; start again")
+
+    oauth = LichessOAuth.from_settings()
+    try:
+        token = oauth.exchange(code, pending)
+    except OAuthError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        oauth.close()
+
+    TokenStore.from_settings().write(token)
+    return {"connected": True, "username": token.username, "export_rate": 60}
+
+
+@app.delete("/api/auth/lichess", status_code=204)
+def lichess_auth_disconnect() -> None:
+    TokenStore.from_settings().clear()
 
 
 @app.get("/api/players/{username}/graph", response_model=RepertoireGraph)

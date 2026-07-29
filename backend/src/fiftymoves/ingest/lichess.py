@@ -36,6 +36,7 @@ class LichessClient:
         self._base_url = base_url.rstrip("/")
         self._max_retries = max_retries
         self._backoff_s = backoff_s
+        self._authenticated = bool(token)
         headers = {"User-Agent": user_agent}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -48,15 +49,21 @@ class LichessClient:
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> LichessClient:
+        from fiftymoves.ingest.tokens import resolve_token
+
         settings = settings or get_settings()
         return cls(
             base_url=settings.lichess_base_url,
-            token=settings.lichess_token,
+            token=resolve_token(settings),
             user_agent=settings.user_agent,
             timeout_s=settings.lichess_timeout_s,
             max_retries=settings.lichess_max_retries,
             backoff_s=settings.lichess_backoff_s,
         )
+
+    @property
+    def authenticated(self) -> bool:
+        return self._authenticated
 
     def close(self) -> None:
         self._client.close()
