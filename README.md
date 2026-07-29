@@ -22,6 +22,7 @@ skaffold.yaml
 | Analysis | Stockfish over UCI, driven by python-chess |
 | Store | Postgres with pgvector |
 | Cache | Redis |
+| Jobs | Celery on Redis |
 | Models | Pydantic v2 |
 | Explanations | Claude, with a deterministic fallback |
 | Client | Vue 3, Vite, d3-hierarchy |
@@ -91,14 +92,62 @@ with `VITE_BACKEND_URL`.
 
 ## Importing a player
 
+Imports run as background jobs, so a large account does not block anything:
+
 ```
-cd backend
-python -m fiftymoves.tools.ingest_lichess <username> --max 400 --out data
+POST /api/players/<username>/import        -> {"job_id": ...}
+GET  /api/imports/<job_id>                 -> progress, then the result
 ```
 
-Prints the repertoire summary and writes parsed games and decision positions to
-`data/`. Export is unauthenticated by default at 20 games per second. Setting
-`FIFTYMOVES_LICHESS_TOKEN` raises that to 60 for the token holder's own games.
+A Celery worker consumes the queue. Compose and the Kubernetes manifests both run
+one; locally:
+
+```
+cd backend
+celery -A fiftymoves.jobs.app worker --loglevel=info
+```
+
+The same pipeline is available as a one-shot command:
+
+```
+python -m fiftymoves.tools.ingest_lichess <username> --max 28000 --out data
+```
+
+Either path writes games and decision positions to `data/` as they arrive, so an
+interrupted export keeps what it already fetched.
+
+### Rate and the export ceiling
+
+Unauthenticated export runs at 20 games per second and stops well short of a large
+history. Authenticating raises it to 60 for your own games and lifts the ceiling.
+Sign in through lichess:
+
+```
+POST   /api/auth/lichess/start      -> {"authorize_url": ...}   open it in a browser
+POST   /api/auth/lichess/callback   -> exchanges the code
+GET    /api/auth/lichess            -> current state
+DELETE /api/auth/lichess            -> forget the token
+```
+
+The flow is OAuth2 with PKCE, so there is no client secret and no app registration.
+The token is written to `data/lichess_token.json`; delete that file or call the
+DELETE endpoint to revoke locally. `FIFTYMOVES_LICHESS_TOKEN` still works and takes
+precedence if you would rather paste a personal token yourself.
+
+## Checking moves against the engine
+
+Moves that give up material or position against the engine's choice are marked on
+the graph with `?!`, `?` or `??`. The pass is a job, and the result is cached per
+graph shape:
+
+```
+POST /api/players/<username>/annotations   -> {"job_id": ...}
+GET  /api/players/<username>/annotations   -> the stored set, or state "missing"
+```
+
+Thresholds sit well above the usual middlegame convention. Sound opening moves
+differ by tens of centipawns, so a lower floor would mark an entire repertoire as
+flawed.
 
 ## Tests
 

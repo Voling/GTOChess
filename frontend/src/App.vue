@@ -83,12 +83,11 @@ const activeFamily = computed(() => {
 
 const empty = computed(() => graph.value !== null && graph.value.edges.length === 0);
 
+// Accelerates with the value, so small floors stay reachable on a large import.
 const volumeStep = computed(() => {
-  const corpus = graph.value?.max_games ?? 0;
-  if (corpus >= 8000) return 25;
-  if (corpus >= 2000) return 10;
-  if (corpus >= 500) return 5;
-  return 1;
+  if (minVolume.value < 10) return 1;
+  if (minVolume.value < 50) return 5;
+  return 25;
 });
 
 let request = 0;
