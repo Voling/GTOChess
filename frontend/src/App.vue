@@ -76,6 +76,14 @@ const activeFamily = computed(() => {
 
 const empty = computed(() => graph.value !== null && graph.value.edges.length === 0);
 
+const volumeStep = computed(() => {
+  const corpus = graph.value?.max_games ?? 0;
+  if (corpus >= 8000) return 25;
+  if (corpus >= 2000) return 10;
+  if (corpus >= 500) return 5;
+  return 1;
+});
+
 let request = 0;
 
 async function load() {
@@ -220,7 +228,7 @@ onBeforeUnmount(() => {
 
       <Segmented v-model="side" label="Playing" :options="SIDES" />
       <Stepper v-model="maxPly" label="Depth" :min="2" :max="30" />
-      <Stepper v-model="minVolume" label="Min games" :min="1" :max="40" />
+      <Stepper v-model="minVolume" label="Min games" :min="1" :max="250" :step="volumeStep" />
       <Stepper v-model="maxChildren" label="Branches" :min="1" :max="12" />
 
       <p v-if="graph" class="counts num">

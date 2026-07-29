@@ -43,7 +43,7 @@ def data_dir(settings: Settings) -> Path:
     return settings.data_dir
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=2)
 def load_games(username: str, directory: str) -> tuple[GameRecord, ...]:
     path = Path(directory) / f"{username}.games.jsonl"
     if not path.exists():
@@ -59,15 +59,23 @@ def player_games(username: str) -> tuple[GameRecord, ...]:
     return load_games(username, str(data_dir(get_settings())))
 
 
-_graphs: LruCache[RepertoireGraph] = LruCache(max_entries=32)
+_graphs: LruCache[RepertoireGraph] | None = None
+
+
+def graph_cache() -> LruCache[RepertoireGraph]:
+    global _graphs
+    if _graphs is None:
+        _graphs = LruCache[RepertoireGraph](get_settings().graph_cache_entries)
+    return _graphs
 
 
 def graph_for(
     username: str, *, side: Side, max_ply: int, min_volume: int, max_children: int
 ) -> RepertoireGraph:
     settings = get_settings()
+    graphs = graph_cache()
     key = f"{username}:{side.value}:{max_ply}:{min_volume}:{max_children}"
-    cached = _graphs.get(key)
+    cached = graphs.get(key)
     if cached is not None:
         return cached
 
@@ -82,7 +90,7 @@ def graph_for(
         family_prior_games=settings.family_prior_games,
         family_slots=settings.family_slots,
     )
-    _graphs.put(key, graph)
+    graphs.put(key, graph)
     return graph
 
 

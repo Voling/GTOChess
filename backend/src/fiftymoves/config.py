@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     data_dir: Path = Path("data")
+    # A large import runs to hundreds of megabytes in memory, so this stays small.
+    graph_cache_entries: int = 8
 
     database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"

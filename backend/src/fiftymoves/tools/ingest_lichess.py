@@ -58,6 +58,8 @@ def run(
                 games.append(game)
                 if handle is not None:
                     handle.write(game.model_dump_json() + "\n")
+                    if seen % report_every == 0:
+                        handle.flush()
 
             if seen % report_every == 0:
                 elapsed = time.monotonic() - started
@@ -65,7 +67,8 @@ def run(
                 remaining = (limit - seen) / rate if rate and limit else 0.0
                 print(
                     f"  {seen} exported, {len(games)} usable, "
-                    f"{rate:.0f}/s, ~{remaining / 60:.0f} min left"
+                    f"{rate:.0f}/s, ~{remaining / 60:.0f} min left",
+                    flush=True,
                 )
 
     if games_path is not None:

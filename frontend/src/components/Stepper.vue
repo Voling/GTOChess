@@ -1,8 +1,12 @@
 <script setup lang="ts">
-const props = defineProps<{ label: string; modelValue: number; min: number; max: number }>();
+const props = withDefaults(
+  defineProps<{ label: string; modelValue: number; min: number; max: number; step?: number }>(),
+  { step: 1 },
+);
 const emit = defineEmits<{ "update:modelValue": [value: number] }>();
 
-function nudge(delta: number) {
+function nudge(direction: number) {
+  const delta = Math.max(1, props.step) * direction;
   const next = Math.min(props.max, Math.max(props.min, props.modelValue + delta));
   if (next !== props.modelValue) emit("update:modelValue", next);
 }
