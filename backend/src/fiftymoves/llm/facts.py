@@ -10,6 +10,7 @@ from fiftymoves.domain.models import (
     AblationKind,
     EngineReport,
     EvalLandscape,
+    PositionAttribution,
     SensitivityItem,
     SensitivityReport,
 )
@@ -83,6 +84,23 @@ def _sensitivity_statement(item: SensitivityItem) -> str:
     )
 
 
+def _attribution_statement(attribution: PositionAttribution) -> str | None:
+    outliers = attribution.outliers(3)
+    if not outliers:
+        return None
+    parts = [f"the {p.piece_symbol} on {p.square} at {abs(p.value_pawns):.1f}" for p in outliers]
+    split = ""
+    if attribution.material_pawns is not None and attribution.positional_pawns is not None:
+        split = (
+            f" Material accounts for {attribution.material_pawns:+.2f} and placement for "
+            f"{attribution.positional_pawns:+.2f}."
+        )
+    return (
+        f"The engine's own piece values are furthest from the usual for {', '.join(parts)}, "
+        f"measured in pawns.{split}"
+    )
+
+
 def _landscape_statement(landscape: EvalLandscape) -> str:
     if landscape.is_single_answer:
         return (
@@ -132,6 +150,7 @@ def build_evidence(
     node: GraphNode | None = None,
     family: OpeningFamily | None = None,
     continuations: Sequence[GraphEdge] = (),
+    attribution: PositionAttribution | None = None,
     line_limit: int = 3,
     sensitivity_limit: int = 3,
 ) -> list[Evidence]:
@@ -158,6 +177,13 @@ def build_evidence(
     evidence.append(
         Evidence(id="shape", kind=EvidenceKind.LANDSCAPE, statement=_landscape_statement(landscape))
     )
+
+    if attribution is not None:
+        statement = _attribution_statement(attribution)
+        if statement:
+            evidence.append(
+                Evidence(id="pieces", kind=EvidenceKind.SENSITIVITY, statement=statement)
+            )
 
     if node is not None:
         evidence.append(

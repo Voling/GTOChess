@@ -89,6 +89,42 @@ class EngineReport(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class PieceValue(BaseModel):
+    """What the engine thinks one piece is worth here, in pawns."""
+
+    model_config = ConfigDict(frozen=True)
+
+    square: str
+    piece_symbol: str
+    value_pawns: float
+
+    @property
+    def is_white(self) -> bool:
+        return self.piece_symbol.isupper()
+
+
+class PositionAttribution(BaseModel):
+    """Stockfish's own account of where its evaluation comes from."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pieces: tuple[PieceValue, ...] = ()
+    material_pawns: float | None = None
+    positional_pawns: float | None = None
+
+    def by_square(self) -> dict[str, PieceValue]:
+        return {p.square: p for p in self.pieces}
+
+    def outliers(self, limit: int = 3) -> tuple[PieceValue, ...]:
+        """Pieces furthest from what their type usually costs."""
+        nominal = {"p": 1.0, "n": 3.0, "b": 3.2, "r": 5.0, "q": 9.5, "k": 0.0}
+        ranked = sorted(
+            (p for p in self.pieces if p.piece_symbol.lower() in nominal),
+            key=lambda p: -abs(abs(p.value_pawns) - nominal[p.piece_symbol.lower()]),
+        )
+        return tuple(ranked[:limit])
+
+
 class AblationKind(StrEnum):
     PIECE_REMOVAL = "piece_removal"
     MOVE_SPACE = "move_space"

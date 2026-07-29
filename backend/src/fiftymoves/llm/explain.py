@@ -10,8 +10,14 @@ from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.cache import LruCache
 from fiftymoves.domain.explanations import Evidence, Explanation
 from fiftymoves.domain.graph import GraphEdge, GraphNode
-from fiftymoves.domain.models import EngineReport, EvalLandscape, SensitivityReport
+from fiftymoves.domain.models import (
+    EngineReport,
+    EvalLandscape,
+    PositionAttribution,
+    SensitivityReport,
+)
 from fiftymoves.domain.openings import OpeningFamily
+from fiftymoves.engine.attribution import attribute
 from fiftymoves.engine.protocol import EngineProvider
 from fiftymoves.llm.facts import build_evidence
 from fiftymoves.llm.provider import (
@@ -28,6 +34,7 @@ class PositionStudy(BaseModel):
     report: EngineReport
     sensitivity: SensitivityReport
     landscape: EvalLandscape
+    attribution: PositionAttribution | None = None
 
 
 ExplanationCache = LruCache[Explanation]
@@ -101,12 +108,17 @@ def study_position(
     depth: int = 18,
     ablation_depth: int = 12,
     multipv: int = 3,
+    binary_path: str | None = None,
 ) -> PositionStudy:
     report = engine.analyse(board, depth=depth, multipv=multipv)
+    # Stockfish will account for its own evaluation per piece if asked, which
+    # costs one call and no search.
+    attribution = attribute(binary_path, board) if binary_path else None
     return PositionStudy(
         report=report,
         sensitivity=compute_sensitivity(engine, board, baseline=report, depth=ablation_depth),
         landscape=compute_landscape(board, report),
+        attribution=attribution,
     )
 
 
@@ -139,6 +151,7 @@ def explain_position(
         node=node,
         family=family,
         continuations=continuations,
+        attribution=study.attribution,
     )
     draft = provider.explain(brief_for(board, node), evidence, probe)
     # Anything the engine answered mid-conversation is evidence too, so a claim
