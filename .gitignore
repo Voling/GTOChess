@@ -1,9 +1,10 @@
-# Environments
+﻿# Environments
 .venv/
 venv/
 .env
 
 # Build
+node_modules/
 dist/
 build/
 *.egg-info/

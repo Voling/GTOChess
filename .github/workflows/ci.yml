@@ -14,6 +14,9 @@ jobs:
   # regressions we actually care about.
   check:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,6 +35,9 @@ jobs:
   # outage cannot block the fast feedback loop above.
   engine:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,8 +48,8 @@ jobs:
       - name: Restore pinned engine
         uses: actions/cache@v4
         with:
-          path: vendor/stockfish
-          key: stockfish-${{ hashFiles('engine.lock.json') }}-${{ runner.os }}
+          path: backend/vendor/stockfish
+          key: stockfish-${{ hashFiles('backend/engine.lock.json') }}-${{ runner.os }}
       - name: Provision pinned Stockfish
         # No --record: CI must fail if the lockfile has no committed checksum.
         run: python -m fiftymoves.tools.fetch_stockfish
@@ -54,6 +60,9 @@ jobs:
   wheel:
     needs: [check]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,16 +70,28 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install --upgrade pip build
       - run: python -m build --wheel
-      - name: Assert no engine binary leaked into the wheel
+      - name: Assert no engine binary in the wheel
         run: |
-          if unzip -l dist/*.whl | grep -iq stockfish; then
-            echo "engine binary found in wheel -- it must be a build input only" >&2
-            exit 1
-          fi
+          python - <<'PY'
+          import glob
+          import pathlib
+          import sys
+          import zipfile
+
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          binaries = [
+              n for n in names
+              if pathlib.PurePosixPath(n).name.lower() in {"stockfish", "stockfish.exe"}
+          ]
+          if binaries:
+              sys.exit(f"engine binary in wheel: {binaries}. It is a build input, not a payload.")
+          print(f"{wheel}: no engine binary")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: fiftymoves-wheel
-          path: dist/*.whl
+          path: backend/dist/*.whl
 
   # Image build. The engine stage fetches and checksum-verifies Stockfish, so a
   # green build here is also proof the lockfile is correct.
@@ -83,7 +104,7 @@ jobs:
       - name: Build runtime image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./backend
           target: runtime
           platforms: linux/amd64
           push: false

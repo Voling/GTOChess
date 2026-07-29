@@ -3,7 +3,7 @@ name: fiftymoves
 services:
   api:
     build:
-      context: .
+      context: ./backend
       target: dev
       args:
         ENGINE_PLATFORM: linux-x86-64
@@ -20,8 +20,8 @@ services:
     volumes:
       # Live reload for source only. /opt/venv and /opt/stockfish stay image-owned
       # so a bind mount can never shadow the verified engine.
-      - ./src:/app/src:ro
-      - ./tests:/app/tests:ro
+      - ./backend/src:/app/src:ro
+      - ./backend/tests:/app/tests:ro
     depends_on:
       postgres:
         condition: service_healthy
