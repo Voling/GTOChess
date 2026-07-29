@@ -56,7 +56,7 @@ const share = (edge: PlacedEdge) =>
         :class="{ hollow: familyColor(family.key, slots) === NEUTRAL }"
       />
       <span class="named">{{ opening ? opening.name : family.name }}</span>
-      <span v-if="opening" class="num eco">{{ opening.eco }}</span>
+      <span v-if="opening?.eco" class="num eco">{{ opening.eco }}</span>
     </p>
 
     <p class="num line">{{ line }}</p>

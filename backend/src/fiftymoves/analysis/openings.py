@@ -121,6 +121,41 @@ def build_families(
     return [f.model_copy(update={"slot": i if i < slots else -1}) for i, f in enumerate(families)]
 
 
+def segments(opening_name: str) -> list[str]:
+    """Split a lichess name into its hierarchy.
+
+    "Sicilian Defense: Najdorf Variation, English Attack" becomes
+    ["Sicilian Defense", "Najdorf Variation", "English Attack"].
+    """
+    head, _, tail = opening_name.partition(":")
+    parts = [head.strip()]
+    parts.extend(piece.strip() for piece in tail.split(",") if piece.strip())
+    return [p for p in parts if p]
+
+
+def join_segments(parts: Sequence[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]}: {', '.join(parts[1:])}"
+
+
+def shared_name(names: Sequence[str]) -> str:
+    """The most specific name every game here agrees on."""
+    if not names:
+        return ""
+    split = [segments(name) for name in names]
+    common: list[str] = []
+    for index in range(min(len(parts) for parts in split)):
+        candidate = split[0][index]
+        if all(parts[index] == candidate for parts in split):
+            common.append(candidate)
+        else:
+            break
+    return join_segments(common)
+
+
 def dominant(counts: Mapping[str, int]) -> tuple[str | None, float]:
     if not counts:
         return None, 0.0

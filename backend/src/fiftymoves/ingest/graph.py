@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 import chess
 
-from fiftymoves.analysis.openings import build_families, dominant, family_key
+from fiftymoves.analysis.openings import build_families, dominant, family_key, shared_name
 from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode, OpeningName, RepertoireGraph
 from fiftymoves.domain.identity import position_key
@@ -35,15 +35,24 @@ class _Node:
             self.as_white += 1
 
     def opening(self, min_share: float = 0.6) -> tuple[str, str] | None:
-        """The name only sticks once most games here agree on it.
+        """The most specific name the games here agree on.
 
-        Near the root every game passes through, so the commonest name is just
-        the commonest opening overall and says nothing about the position.
+        A dominant variation is named outright. Where the games fan out across
+        sub-variations, the shared prefix is still true of all of them, which is
+        more useful than naming whichever one happens to be commonest.
         """
         if not self.openings or not self.games:
             return None
-        pair, count = max(self.openings.items(), key=lambda item: (item[1], item[0]))
-        return pair if count / len(self.games) >= min_share else None
+
+        (eco, name), count = max(self.openings.items(), key=lambda item: (item[1], item[0]))
+        if count / len(self.games) >= min_share:
+            return eco, name
+
+        agreed = shared_name([label for _, label in self.openings])
+        if not agreed:
+            return None
+        codes = {code for code, _ in self.openings if code}
+        return (codes.pop() if len(codes) == 1 else ""), agreed
 
     def player_to_move(self, side: Side) -> bool:
         white_to_move = self.key.epd.split(" ")[1] == "w"
