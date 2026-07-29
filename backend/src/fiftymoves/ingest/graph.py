@@ -46,6 +46,10 @@ def build_graph(
     max_ply: int = 12,
     min_volume: int = 1,
     max_children: int = 4,
+    family_window_ply: int = 16,
+    family_min_games: int = 4,
+    family_prior_games: int = 12,
+    family_slots: int = 3,
 ) -> RepertoireGraph:
     standard = [g for g in games if g.variant is Variant.STANDARD and not g.initial_fen]
     root_key = position_key(chess.Board())
@@ -118,7 +122,13 @@ def build_graph(
             reachable.add(edge.child)
     kept = [e for e in kept if e.parent in reachable and e.child in reachable]
 
-    families = build_families(standard)
+    families = build_families(
+        standard,
+        window_ply=family_window_ply,
+        min_games=family_min_games,
+        prior_games=family_prior_games,
+        slots=family_slots,
+    )
     ranked = {f.key for f in families}
 
     def _node(digest: str, node: _Node) -> GraphNode:

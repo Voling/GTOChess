@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,6 +51,20 @@ class Settings(BaseSettings):
     opening_edge_min_games: int = 10
     opening_edge_prior_games: int = 30
 
+    family_window_ply: int = 16
+    family_min_games: int = 4
+    family_prior_games: int = 12
+    family_slots: int = 3
+
+    llm_provider: str = "auto"
+    llm_model: str = "claude-opus-5"
+    llm_effort: str = "medium"
+    llm_max_tokens: int = 1500
+    llm_timeout_s: float = 60.0
+    llm_cache_entries: int = 512
+    anthropic_api_key: str | None = None
+    explain_depth: int = 18
+
     lichess_base_url: str = "https://lichess.org"
     lichess_token: str | None = None
     lichess_timeout_s: float = 60.0
@@ -66,10 +81,14 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    data_dir: Path = Path("data")
 
     database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"
     s3_bucket: str | None = None
+
+    def anthropic_credentials(self) -> str | None:
+        return self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
 
     def _candidate_engine_dirs(self) -> list[Path]:
         return [CONTAINER_ENGINE_DIR, local_engine_dir()]
