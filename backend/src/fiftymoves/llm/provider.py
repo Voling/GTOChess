@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import anthropic
 from anthropic.types.beta import (
@@ -12,6 +13,17 @@ from anthropic.types.beta import (
 from pydantic import BaseModel
 
 from fiftymoves.domain.explanations import Claim, Evidence
+from fiftymoves.llm.tools import TOOLS, EngineProbe, ProbeLimit
+
+MAX_TURNS = 8
+
+PROBE_PROMPT = """
+
+You may also ask the engine directly, with evaluate_line and best_replies. Use them \
+whenever a claim depends on what happens after a move: check the line, then say what \
+the engine found. Never state the result of a line you did not evaluate, and never work \
+it out yourself from the board. Each answer comes back with an evidence id, which you \
+cite exactly like the facts above."""
 
 SYSTEM_PROMPT = """You explain chess positions for an assessment tool. A player is \
 navigating a graph of the openings they actually play, and you describe the position \
@@ -94,7 +106,12 @@ class ExplanationProvider(Protocol):
     @property
     def model(self) -> str | None: ...
 
-    def explain(self, brief: PositionBrief, evidence: Sequence[Evidence]) -> Draft: ...
+    def explain(
+        self,
+        brief: PositionBrief,
+        evidence: Sequence[Evidence],
+        probe: EngineProbe | None = None,
+    ) -> Draft: ...
 
 
 def render_request(brief: PositionBrief, evidence: Sequence[Evidence]) -> str:
@@ -117,7 +134,12 @@ class DeterministicProvider:
     def model(self) -> str | None:
         return None
 
-    def explain(self, brief: PositionBrief, evidence: Sequence[Evidence]) -> Draft:
+    def explain(
+        self,
+        brief: PositionBrief,
+        evidence: Sequence[Evidence],
+        probe: EngineProbe | None = None,
+    ) -> Draft:
         if not evidence:
             raise ProviderError("no evidence to explain")
         claims = tuple(Claim(text=e.statement, evidence_id=e.id) for e in evidence[:4])
@@ -147,11 +169,16 @@ class AnthropicProvider:
     def model(self) -> str | None:
         return self._model
 
-    def explain(self, brief: PositionBrief, evidence: Sequence[Evidence]) -> Draft:
+    def explain(
+        self,
+        brief: PositionBrief,
+        evidence: Sequence[Evidence],
+        probe: EngineProbe | None = None,
+    ) -> Draft:
         system: list[BetaTextBlockParam] = [
             {
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": SYSTEM_PROMPT + (PROBE_PROMPT if probe else ""),
                 "cache_control": {"type": "ephemeral"},
             }
         ]
@@ -162,24 +189,54 @@ class AnthropicProvider:
         messages: list[BetaMessageParam] = [
             {"role": "user", "content": render_request(brief, evidence)}
         ]
+        extra: dict[str, Any] = {"tools": TOOLS} if probe else {}
 
-        try:
-            response = self._client.beta.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                system=system,
-                output_config=output_config,
-                messages=messages,
+        for _ in range(MAX_TURNS):
+            try:
+                response = self._client.beta.messages.create(
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    betas=["server-side-fallback-2026-07-01"],
+                    fallbacks="default",
+                    system=system,
+                    output_config=output_config,
+                    messages=messages,
+                    **extra,
+                )
+            except anthropic.APIError as exc:
+                raise ProviderError(str(exc)) from exc
+
+            if response.stop_reason == "refusal":
+                raise ProviderError("the model declined to answer for this position")
+
+            if response.stop_reason != "tool_use" or probe is None:
+                text = next((b.text for b in response.content if b.type == "text"), None)
+                if text is None:
+                    raise ProviderError("the model returned no text")
+                return Draft.model_validate_json(text)
+
+            messages.append(
+                cast(BetaMessageParam, {"role": "assistant", "content": response.content})
             )
-        except anthropic.APIError as exc:
-            raise ProviderError(str(exc)) from exc
+            results: list[Any] = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                payload = block.input if isinstance(block.input, dict) else {}
+                try:
+                    answer: Any = probe.dispatch(block.name, payload)
+                    failed = False
+                except ProbeLimit as exc:
+                    answer = {"error": str(exc)}
+                    failed = True
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(answer),
+                        "is_error": failed,
+                    }
+                )
+            messages.append(cast(BetaMessageParam, {"role": "user", "content": results}))
 
-        if response.stop_reason == "refusal":
-            raise ProviderError("the model declined to answer for this position")
-
-        text = next((b.text for b in response.content if b.type == "text"), None)
-        if text is None:
-            raise ProviderError("the model returned no text")
-        return Draft.model_validate_json(text)
+        raise ProviderError("the model kept asking the engine without answering")

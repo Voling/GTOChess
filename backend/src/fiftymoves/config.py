@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1500
     llm_timeout_s: float = 60.0
     llm_cache_entries: int = 512
+    # Lets the model ask the engine about lines instead of working them out itself.
+    llm_probe_enabled: bool = True
+    llm_probe_depth: int = 14
+    llm_probe_max_calls: int = 6
     anthropic_api_key: str | None = None
     explain_depth: int = 18
 

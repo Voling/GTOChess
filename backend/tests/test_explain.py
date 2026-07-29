@@ -31,6 +31,7 @@ from fiftymoves.llm.provider import (
     effort_level,
     render_request,
 )
+from fiftymoves.llm.tools import EngineProbe
 
 MATE_IN_ONE = "7k/6pp/8/8/8/8/1p6/R5K1 w - - 0 1"
 
@@ -58,6 +59,7 @@ class StubProvider:
     def __init__(self, draft: Draft) -> None:
         self._draft = draft
         self.calls = 0
+        self.saw_probe = False
 
     @property
     def name(self) -> str:
@@ -67,8 +69,14 @@ class StubProvider:
     def model(self) -> str | None:
         return "stub-1"
 
-    def explain(self, brief: PositionBrief, evidence: Sequence[Evidence]) -> Draft:
+    def explain(
+        self,
+        brief: PositionBrief,
+        evidence: Sequence[Evidence],
+        probe: EngineProbe | None = None,
+    ) -> Draft:
         self.calls += 1
+        self.saw_probe = probe is not None
         return self._draft
 
 

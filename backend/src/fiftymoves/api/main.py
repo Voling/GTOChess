@@ -31,6 +31,7 @@ from fiftymoves.llm.explain import (
     study_position,
 )
 from fiftymoves.llm.provider import DeterministicProvider, ProviderError
+from fiftymoves.llm.tools import EngineProbe
 
 app = FastAPI(title="FiftyMoves", version="0.1.0")
 
@@ -305,20 +306,33 @@ def position_explanation(
 
     engine = None
     try:
-        if study is None:
+        wants_engine = study is None or settings.llm_probe_enabled
+        if wants_engine:
             engine = StockfishEngine(
                 str(engine_path),
                 threads=settings.engine_threads,
                 hash_mb=settings.engine_hash_mb,
             )
+        if study is None:
             study = study_position(
                 board,
-                engine=engine,
+                engine=engine,  # type: ignore[arg-type]
                 depth=settings.explain_depth,
                 ablation_depth=settings.ablation_depth,
                 multipv=settings.multipv,
             )
             studies.put(engine_key, study)
+
+        probe = (
+            EngineProbe(
+                engine,
+                board,
+                depth=settings.llm_probe_depth,
+                max_calls=settings.llm_probe_max_calls,
+            )
+            if engine is not None and settings.llm_probe_enabled
+            else None
+        )
 
         try:
             explanation = explain_position(
@@ -329,6 +343,7 @@ def position_explanation(
                 family=family,
                 continuations=continuations,
                 study=study,
+                probe=probe,
             )
         except ProviderError as exc:
             # The engine work is already done, so still answer from the

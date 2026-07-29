@@ -22,6 +22,7 @@ from fiftymoves.llm.provider import (
     ExplanationProvider,
     PositionBrief,
 )
+from fiftymoves.llm.tools import EngineProbe
 
 
 class PositionStudy(BaseModel):
@@ -127,6 +128,7 @@ def explain_position(
     ablation_depth: int = 12,
     multipv: int = 3,
     study: PositionStudy | None = None,
+    probe: EngineProbe | None = None,
 ) -> Explanation:
     if study is None:
         if engine is None:
@@ -143,7 +145,12 @@ def explain_position(
         family=family,
         continuations=continuations,
     )
-    return ground(digest, provider.explain(brief_for(board, node), evidence), evidence, provider)
+    draft = provider.explain(brief_for(board, node), evidence, probe)
+    # Anything the engine answered mid-conversation is evidence too, so a claim
+    # resting on a probe still has to cite something real.
+    if probe is not None:
+        evidence = [*evidence, *probe.evidence]
+    return ground(digest, draft, evidence, provider)
 
 
 def build_provider(
