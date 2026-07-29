@@ -21,6 +21,7 @@ from __future__ import annotations
 import chess
 
 from fiftymoves.domain.identity import position_key
+from fiftymoves.domain.material import PIECE_VALUE_CP
 from fiftymoves.domain.models import (
     AblationKind,
     EngineReport,
@@ -56,12 +57,14 @@ def _ablate_pieces(
         perturbed = _score_or_none(engine, probe, depth)
         if perturbed is None:
             continue
+        value = PIECE_VALUE_CP[piece.piece_type]
         items.append(
             SensitivityItem(
                 kind=AblationKind.PIECE_REMOVAL,
                 square=chess.square_name(square),
                 piece_symbol=piece.symbol(),
                 delta_cp=perturbed - baseline_cp,
+                expected_cp=-value if piece.color == chess.WHITE else value,
                 baseline_cp=baseline_cp,
                 perturbed_cp=perturbed,
             )

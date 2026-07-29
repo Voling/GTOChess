@@ -108,13 +108,20 @@ class SensitivityItem(BaseModel):
     square: str | None = None
     piece_symbol: str | None = None
     delta_cp: int = Field(description="How far the evaluation moved when perturbed")
+    expected_cp: int = Field(
+        default=0, description="Delta predicted by material value alone, so ranking sees the rest"
+    )
     baseline_cp: int
     perturbed_cp: int
     note: str | None = None
 
     @property
+    def residual_cp(self) -> int:
+        return self.delta_cp - self.expected_cp
+
+    @property
     def magnitude(self) -> int:
-        return abs(self.delta_cp)
+        return abs(self.residual_cp)
 
 
 class SensitivityReport(BaseModel):
