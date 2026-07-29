@@ -1,0 +1,61 @@
+name: fiftymoves
+
+services:
+  api:
+    build:
+      context: .
+      target: dev
+      args:
+        ENGINE_PLATFORM: linux-x86-64
+    # The engine assets are AVX2 x86-64 builds; pin the platform so an Apple
+    # Silicon host emulates rather than failing at engine start.
+    platform: linux/amd64
+    ports:
+      # Host 8000 is commonly taken; override with FIFTYMOVES_API_PORT.
+      - "${FIFTYMOVES_API_PORT:-8010}:8000"
+    environment:
+      FIFTYMOVES_ENGINE_PATH: /opt/stockfish/stockfish
+      FIFTYMOVES_DATABASE_URL: postgresql+psycopg://fiftymoves:fiftymoves@postgres:5432/fiftymoves
+      FIFTYMOVES_REDIS_URL: redis://redis:6379/0
+    volumes:
+      # Live reload for source only. /opt/venv and /opt/stockfish stay image-owned
+      # so a bind mount can never shadow the verified engine.
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    # pgvector ships in the image; the graph and the similarity index live in
+    # the same database, so there is no separate vector store to operate.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: fiftymoves
+      POSTGRES_PASSWORD: fiftymoves
+      POSTGRES_DB: fiftymoves
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiftymoves -d fiftymoves"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

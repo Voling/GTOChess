@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Pinned Stockfish build. Verify 'tag' and the per-platform 'asset' names against",
+    "https://github.com/official-stockfish/Stockfish/releases before the first fetch --",
+    "asset naming has changed between release series.",
+    "sha256 is null until the first `--record` fetch pins it. Commit the result.",
+    "AVX2 builds are chosen deliberately: they are the common denominator on modern",
+    "x86-64 and give reproducible nps across CI and dev machines."
+  ],
+  "engine": "stockfish",
+  "tag": "sf_17.1",
+  "base_url": "https://github.com/official-stockfish/Stockfish/releases/download",
+  "platforms": {
+    "windows-x86-64": {
+      "asset": "stockfish-windows-x86-64-avx2.zip",
+      "sha256": "92a77f8d8116b4331696eeb7b232bd03db30d6641a6ce1be1759478b8931d28b"
+    },
+    "linux-x86-64": {
+      "asset": "stockfish-ubuntu-x86-64-avx2.tar",
+      "sha256": "09e953222dbe80aaea5c33dab265413b295cb8376418445c877708c61e31987d"
+    },
+    "darwin-x86-64": {
+      "asset": "stockfish-macos-x86-64-avx2.tar",
+      "sha256": null
+    },
+    "darwin-arm64": {
+      "asset": "stockfish-macos-m1-apple-silicon.tar",
+      "sha256": null
+    }
+  }
+}

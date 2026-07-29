@@ -1,0 +1,107 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  # Fast gate. The golden set runs against the deterministic ReferenceEngine, so
+  # it needs no Stockfish download and gives sub-minute feedback on the sensitivity
+  # regressions we actually care about.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: mypy src
+      - run: pytest -q -m "not needs_engine"
+
+  # Slow gate. Provisions the pinned engine and runs anything that needs real
+  # Stockfish numbers. Split out so a checksum mismatch or a GitHub release
+  # outage cannot block the fast feedback loop above.
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Restore pinned engine
+        uses: actions/cache@v4
+        with:
+          path: vendor/stockfish
+          key: stockfish-${{ hashFiles('engine.lock.json') }}-${{ runner.os }}
+      - name: Provision pinned Stockfish
+        # No --record: CI must fail if the lockfile has no committed checksum.
+        run: python -m fiftymoves.tools.fetch_stockfish
+      - run: pytest -q -m needs_engine
+
+  # Pure-Python wheel. The engine is deliberately absent from the artifact --
+  # it is a build input of the image, not a package payload.
+  wheel:
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install --upgrade pip build
+      - run: python -m build --wheel
+      - name: Assert no engine binary leaked into the wheel
+        run: |
+          if unzip -l dist/*.whl | grep -iq stockfish; then
+            echo "engine binary found in wheel -- it must be a build input only" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fiftymoves-wheel
+          path: dist/*.whl
+
+  # Image build. The engine stage fetches and checksum-verifies Stockfish, so a
+  # green build here is also proof the lockfile is correct.
+  image:
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: fiftymoves:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify the image carries a working engine
+        run: |
+          docker run --rm fiftymoves:ci \
+            python -c "from fiftymoves.config import get_settings; print(get_settings().resolve_engine_path())"
+      - name: Verify the API starts and reports the engine
+        run: |
+          docker run -d --name fm -p 8000:8000 fiftymoves:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /tmp/health.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health.json
+          grep -q '"available": *true' /tmp/health.json
+          docker rm -f fm

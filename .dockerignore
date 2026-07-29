@@ -1,0 +1,26 @@
+# Never ship a host-fetched engine into the build context -- the image fetches
+# its own, checksum-verified, in the engine stage.
+vendor/
+
+.venv/
+venv/
+.env
+
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.git/
+.github/
+docs/
+*.md
+
+data/
+*.pgn
+*.pgn.zst

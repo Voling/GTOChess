@@ -1,0 +1,52 @@
+[project]
+name = "fiftymoves"
+version = "0.1.0"
+description = "Opening-tree knowledge graph and assessment engine for lichess.org and chess.com"
+requires-python = ">=3.12"
+dependencies = [
+    "chess>=1.11",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    "psycopg[binary]>=3.2",
+    "redis>=5.1",
+    "boto3>=1.35",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
+
+[project.scripts]
+fiftymoves-fetch-engine = "fiftymoves.tools.fetch_stockfish:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The wheel is pure Python. Stockfish is a build input, fetched by the Docker
+# engine stage from engine.lock.json -- it is neither committed nor packaged.
+[tool.hatch.build.targets.wheel]
+packages = ["src/fiftymoves"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["needs_engine: requires the vendored Stockfish binary"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"

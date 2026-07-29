@@ -1,0 +1,25 @@
+# Environments
+.venv/
+venv/
+.env
+
+# Build
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Engine binaries are build inputs fetched from engine.lock.json, never
+# committed. The lockfile is the reproducible artifact; the binary is not.
+vendor/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data
+*.pgn
+*.pgn.zst
+data/
