@@ -1,0 +1,50 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: fiftymoves
+
+build:
+  local:
+    push: false
+    useBuildkit: true
+  artifacts:
+    - image: fiftymoves-api
+      context: backend
+      docker:
+        dockerfile: Dockerfile
+        target: runtime
+        buildArgs:
+          ENGINE_PLATFORM: linux-x86-64
+    - image: fiftymoves-web
+      context: frontend
+      docker:
+        dockerfile: Dockerfile
+        target: runtime
+
+manifests:
+  kustomize:
+    paths:
+      - .kube/base
+
+deploy:
+  kubectl: {}
+
+portForward:
+  - resourceType: service
+    resourceName: fiftymoves-web
+    port: 80
+    localPort: 5173
+  - resourceType: service
+    resourceName: fiftymoves-api
+    port: 8000
+    localPort: 8010
+
+profiles:
+  - name: api-only
+    patches:
+      - op: remove
+        path: /build/artifacts/1
+    manifests:
+      kustomize:
+        paths:
+          - .kube/base

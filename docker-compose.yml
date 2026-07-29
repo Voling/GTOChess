@@ -17,16 +17,31 @@ services:
       FIFTYMOVES_ENGINE_PATH: /opt/stockfish/stockfish
       FIFTYMOVES_DATABASE_URL: postgresql+psycopg://fiftymoves:fiftymoves@postgres:5432/fiftymoves
       FIFTYMOVES_REDIS_URL: redis://redis:6379/0
+      FIFTYMOVES_DATA_DIR: /data
+      # Unset falls back to the deterministic provider, so the API still answers.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
       # Live reload for source only. /opt/venv and /opt/stockfish stay image-owned
       # so a bind mount can never shadow the verified engine.
       - ./backend/src:/app/src:ro
       - ./backend/tests:/app/tests:ro
+      - ./backend/data:/data:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      target: runtime
+    ports:
+      - "${FIFTYMOVES_WEB_PORT:-5173}:8080"
+    environment:
+      API_UPSTREAM: http://api:8000
+    depends_on:
+      - api
 
   postgres:
     # pgvector ships in the image; the graph and the similarity index live in
