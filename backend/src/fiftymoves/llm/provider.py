@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
 
 import anthropic
@@ -13,43 +14,23 @@ from anthropic.types.beta import (
 from pydantic import BaseModel
 
 from fiftymoves.domain.explanations import Claim, Evidence
+from fiftymoves.llm.prompts import prompt
 from fiftymoves.llm.tools import TOOLS, EngineProbe, ProbeLimit
 
 MAX_TURNS = 8
 
-PROBE_PROMPT = """
 
-You may also ask the engine directly, with evaluate_line and best_replies. Use them \
-whenever a claim depends on what happens after a move: check the line, then say what \
-the engine found. Never state the result of a line you did not evaluate, and never work \
-it out yourself from the board. Each answer comes back with an evidence id, which you \
-cite exactly like the facts above."""
+class Persona(StrEnum):
+    POSITION = "position"
+    MISTAKE = "mistake"
 
-SYSTEM_PROMPT = """You explain chess positions for an assessment tool. A player is \
-navigating a graph of the openings they actually play, and you describe the position \
-they just landed on.
 
-You are given a numbered list of facts. Every fact was measured: evaluations and lines \
-come from Stockfish, sensitivity figures come from perturbing the board and re-searching, \
-and repertoire figures come from the player's own games. You have no other information \
-about this position and you must not supply any.
+def system_prompt(persona: Persona, *, probing: bool) -> str:
+    text = prompt(persona.value)
+    if not probing:
+        return text
+    return "\n\n".join((text, prompt("probe")))
 
-Rules:
-
-1. Every claim you write must cite exactly one fact by its id. If you cannot ground a \
-sentence in a supplied fact, do not write the sentence.
-2. Never restate a fact verbatim. Say what it means for the player.
-3. Rank by what the measurements say matters. If one move is forced, that is the story, \
-and a positional observation about some other part of the board is not. If the sensitivity \
-figures put a piece or a tempo at the top, that is what the position turns on.
-4. Do not name openings, plans, or theory that the facts do not mention. Do not guess at \
-history or at what is "known" or "standard". This tool also handles Chess960, where \
-opening theory does not apply at all.
-5. Do not coach, do not encourage, and do not hedge. State what is true.
-6. Write 2 to 4 claims. One sentence each, plain and specific. No lists inside a claim.
-
-The headline is a single clause naming what the position turns on, under 60 characters, \
-with no trailing period."""
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -111,17 +92,21 @@ class ExplanationProvider(Protocol):
         brief: PositionBrief,
         evidence: Sequence[Evidence],
         probe: EngineProbe | None = None,
+        persona: Persona = Persona.POSITION,
+        ask: str | None = None,
     ) -> Draft: ...
 
 
-def render_request(brief: PositionBrief, evidence: Sequence[Evidence]) -> str:
+def render_request(
+    brief: PositionBrief, evidence: Sequence[Evidence], ask: str | None = None
+) -> str:
     facts = "\n".join(f"[{e.id}] {e.statement}" for e in evidence)
     line = brief.line or "the starting position"
     return (
         f"Position: {line}\n"
         f"Variant: {brief.variant}. {brief.side_to_move} to move at ply {brief.depth_ply}.\n\n"
         f"Facts:\n{facts}\n\n"
-        f"Explain what this position turns on."
+        f"{ask or 'Explain what this position turns on.'}"
     )
 
 
@@ -139,6 +124,8 @@ class DeterministicProvider:
         brief: PositionBrief,
         evidence: Sequence[Evidence],
         probe: EngineProbe | None = None,
+        persona: Persona = Persona.POSITION,
+        ask: str | None = None,
     ) -> Draft:
         if not evidence:
             raise ProviderError("no evidence to explain")
@@ -174,11 +161,13 @@ class AnthropicProvider:
         brief: PositionBrief,
         evidence: Sequence[Evidence],
         probe: EngineProbe | None = None,
+        persona: Persona = Persona.POSITION,
+        ask: str | None = None,
     ) -> Draft:
         system: list[BetaTextBlockParam] = [
             {
                 "type": "text",
-                "text": SYSTEM_PROMPT + (PROBE_PROMPT if probe else ""),
+                "text": system_prompt(persona, probing=probe is not None),
                 "cache_control": {"type": "ephemeral"},
             }
         ]
@@ -187,7 +176,7 @@ class AnthropicProvider:
             "format": {"type": "json_schema", "schema": SCHEMA},
         }
         messages: list[BetaMessageParam] = [
-            {"role": "user", "content": render_request(brief, evidence)}
+            {"role": "user", "content": render_request(brief, evidence, ask)}
         ]
         extra: dict[str, Any] = {"tools": TOOLS} if probe else {}
 

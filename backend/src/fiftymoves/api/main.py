@@ -9,15 +9,20 @@ import chess
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from fiftymoves.analysis.annotations import classify
+from fiftymoves.analysis.book import score_openings
 from fiftymoves.api.imports import ImportJob, read_job
 from fiftymoves.cache import LruCache
 from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
+from fiftymoves.domain.annotations import MoveQuality
+from fiftymoves.domain.book import OpeningPhase
 from fiftymoves.domain.explanations import Explanation
 from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.domain.knowledge import KnowledgeView, PlanNeighbour
 from fiftymoves.engine.stockfish import StockfishEngine
 from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
+from fiftymoves.ingest.cost_store import MoveCostStore
 from fiftymoves.ingest.explanation_store import ExplanationStore
 from fiftymoves.ingest.graph import GameWalk, prune_walk, walk_games
 from fiftymoves.ingest.knowledge_store import KnowledgeStore
@@ -27,9 +32,11 @@ from fiftymoves.jobs.tasks import annotate_player, import_player, learn_position
 from fiftymoves.llm.explain import (
     build_provider,
     cache_key,
+    explain_mistake,
     explain_position,
     get_cache,
     get_studies,
+    mistake_key,
     study_key,
     study_position,
 )
@@ -413,6 +420,114 @@ def write_explanation(
     finally:
         if engine is not None:
             engine.close()
+
+    get_cache(settings.llm_cache_entries).put(key, explanation)
+    store.put(key, explanation)
+    return explanation
+
+
+@app.get("/api/players/{username}/costs")
+def player_costs(
+    username: str,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=12, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=4, ge=1, le=12),
+) -> dict[str, Any]:
+    """Move costs for this graph, read from a store keyed by position.
+
+    Pricing does not depend on how the graph was pruned, so a slider nudge reads
+    the same records rather than discarding hours of engine time.
+    """
+    settings = get_settings()
+    graph = graph_for(
+        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+    )
+    costs = MoveCostStore(settings.data_dir)
+    marks: list[dict[str, Any]] = []
+    priced = 0
+    for edge in graph.edges:
+        if not edge.by_player:
+            continue
+        cost = costs.get(edge.parent)
+        if cost is None:
+            continue
+        loss = cost.loss(edge.uci)
+        if loss is None:
+            continue
+        priced += 1
+        quality = classify(loss)
+        if quality is MoveQuality.SOUND:
+            continue
+        marks.append(
+            {
+                "parent": edge.parent,
+                "child": edge.child,
+                "uci": edge.uci,
+                "san": edge.san,
+                "quality": quality.value,
+                "loss_cp": loss,
+                "best_san": cost.best_san,
+                "games": edge.games,
+                "depth": cost.depth,
+            }
+        )
+    marks.sort(key=lambda m: (-int(m["loss_cp"]), -int(m["games"])))
+    return {"priced_moves": priced, "flagged": len(marks), "marks": marks}
+
+
+@app.get("/api/players/{username}/opening-phase", response_model=OpeningPhase)
+def opening_phase(
+    username: str,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=28, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=12, ge=1, le=12),
+) -> OpeningPhase:
+    settings = get_settings()
+    graph = graph_for(
+        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+    )
+    store = MoveCostStore(settings.data_dir)
+    costs = {n.digest: c for n in graph.nodes if (c := store.get(n.digest)) is not None}
+    return score_openings(graph, costs)
+
+
+@app.post("/api/players/{username}/positions/{digest}/moves/{uci}/explanation")
+def explain_move(username: str, digest: str, uci: str) -> Explanation:
+    """Why one move gave ground. Costs a model call, so it is a POST."""
+    settings = get_settings()
+    provider = configured_provider(settings)
+    costs = MoveCostStore(settings.data_dir)
+    cost = costs.get(digest)
+    if cost is None:
+        raise HTTPException(status_code=404, detail="this position has not been priced yet")
+    if cost.loss(uci) is None:
+        raise HTTPException(status_code=404, detail="that move was not priced from this position")
+
+    key = mistake_key(digest, uci, settings.pipeline_version, provider.name)
+    store = ExplanationStore(settings.data_dir)
+    held = get_cache(settings.llm_cache_entries).get(key) or store.get(key)
+    if held is not None:
+        return held
+
+    try:
+        engine_path = settings.resolve_engine_path()
+    except EngineNotProvisioned as exc:
+        raise HTTPException(status_code=503, detail=str(exc).splitlines()[0]) from exc
+
+    board = chess.Board(f"{cost.epd} 0 1")
+    engine = StockfishEngine(
+        str(engine_path), threads=settings.engine_threads, hash_mb=settings.engine_hash_mb
+    )
+    try:
+        explanation = explain_mistake(
+            board, provider=provider, engine=engine, cost=cost, played_uci=uci
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        engine.close()
 
     get_cache(settings.llm_cache_entries).put(key, explanation)
     store.put(key, explanation)

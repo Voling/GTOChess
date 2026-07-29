@@ -12,6 +12,7 @@ class EvidenceKind(StrEnum):
     LANDSCAPE = "landscape"
     REPERTOIRE = "repertoire"
     OPENING = "opening"
+    PLAN = "plan"
 
 
 class Evidence(BaseModel):

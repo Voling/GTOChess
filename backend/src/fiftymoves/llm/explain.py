@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from fiftymoves.analysis.landscape import compute_landscape
 from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.cache import LruCache
+from fiftymoves.domain.book import MoveCost
 from fiftymoves.domain.explanations import Evidence, Explanation
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.models import (
@@ -20,11 +21,13 @@ from fiftymoves.domain.openings import OpeningFamily
 from fiftymoves.engine.attribution import attribute
 from fiftymoves.engine.protocol import EngineProvider
 from fiftymoves.llm.facts import build_evidence
+from fiftymoves.llm.mistakes import Mistake, build_mistake_evidence
 from fiftymoves.llm.provider import (
     AnthropicProvider,
     DeterministicProvider,
     Draft,
     ExplanationProvider,
+    Persona,
     PositionBrief,
 )
 from fiftymoves.llm.tools import EngineProbe
@@ -159,6 +162,35 @@ def explain_position(
     if probe is not None:
         evidence = [*evidence, *probe.evidence]
     return ground(digest, draft, evidence, provider)
+
+
+def mistake_key(parent_digest: str, uci: str, pipeline_version: str, provider_name: str) -> str:
+    return f"{pipeline_version}:{provider_name}:{parent_digest}:{uci}"
+
+
+def explain_mistake(
+    board: chess.Board,
+    *,
+    provider: ExplanationProvider,
+    engine: EngineProvider,
+    cost: MoveCost,
+    played_uci: str,
+    node: GraphNode | None = None,
+    probe: EngineProbe | None = None,
+) -> Explanation:
+    """Why one move gave ground, keyed by the move rather than the position."""
+    mistake = Mistake(board, played_uci, cost)
+    evidence = build_mistake_evidence(engine, mistake, depth=cost.depth)
+    draft = provider.explain(
+        brief_for(board, node),
+        evidence,
+        probe,
+        persona=Persona.MISTAKE,
+        ask=f"Explain what went wrong with {mistake.played_san}.",
+    )
+    if probe is not None:
+        evidence = [*evidence, *probe.evidence]
+    return ground(f"{cost.digest}:{played_uci}", draft, evidence, provider)
 
 
 def build_provider(

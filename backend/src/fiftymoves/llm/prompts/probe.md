@@ -1,0 +1,1 @@
+You may also ask the engine directly, with evaluate_line and best_replies. Use them whenever a claim depends on what happens after a move: check the line, then say what the engine found. Never state the result of a line you did not evaluate, and never work it out yourself from the board. Each answer comes back with an evidence id, which you cite exactly like the facts above.
