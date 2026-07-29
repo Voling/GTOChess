@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
+  fetchAnnotations,
   fetchExplanation,
   fetchGraph,
   GraphError,
+  startAnnotation,
   type Explanation,
   type GraphQuery,
+  type MoveAnnotation,
   type RepertoireGraph,
   type Side,
 } from "./api";
@@ -39,6 +42,10 @@ const loading = ref(false);
 const hovered = ref<string | null>(null);
 const pinned = ref<string | null>(null);
 const highlighted = ref<string | null>(null);
+
+const annotations = ref<Map<string, MoveAnnotation>>(new Map());
+const annotationState = ref<"missing" | "running" | "ready">("missing");
+const annotationNote = ref<string | null>(null);
 
 const explanation = ref<Explanation | null>(null);
 const explaining = ref(false);
@@ -98,6 +105,10 @@ async function load() {
     pinned.value = result.root;
     hovered.value = null;
     highlighted.value = null;
+    annotations.value = new Map();
+    annotationState.value = "missing";
+    annotationNote.value = null;
+    loadAnnotations();
   } catch (exc) {
     if (mine !== request) return;
     missing.value = exc instanceof GraphError && exc.status === 404;
@@ -159,6 +170,46 @@ function scheduleExplain() {
 
 watch(pinned, scheduleExplain);
 
+let annotationPoll: number | undefined;
+
+async function loadAnnotations() {
+  window.clearTimeout(annotationPoll);
+  try {
+    const response = await fetchAnnotations(query.value);
+    if (response.state === "ready" && response.annotations) {
+      const set = response.annotations;
+      annotations.value = new Map(set.annotations.map((a) => [a.child, a]));
+      annotationState.value = "ready";
+      const flawed = set.annotations.filter((a) => a.quality !== "sound").length;
+      annotationNote.value =
+        `${flawed} of ${set.annotations.length} moves flagged` +
+        (set.truncated ? ", busiest positions only" : "");
+      return;
+    }
+    annotations.value = new Map();
+    annotationNote.value = null;
+    if (annotationState.value === "running") {
+      annotationPoll = window.setTimeout(loadAnnotations, 3000);
+    } else {
+      annotationState.value = "missing";
+    }
+  } catch {
+    annotationState.value = "missing";
+  }
+}
+
+async function analyseMoves() {
+  annotationState.value = "running";
+  annotationNote.value = "Searching your positions";
+  try {
+    await startAnnotation(query.value);
+    annotationPoll = window.setTimeout(loadAnnotations, 3000);
+  } catch (exc) {
+    annotationState.value = "missing";
+    annotationNote.value = exc instanceof Error ? exc.message : String(exc);
+  }
+}
+
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
   if (target instanceof HTMLInputElement) return;
@@ -191,6 +242,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
   window.clearTimeout(pending);
   window.clearTimeout(explainTimer);
+  window.clearTimeout(annotationPoll);
 });
 </script>
 
@@ -203,6 +255,7 @@ onBeforeUnmount(() => {
       :active-digest="active?.node.digest ?? null"
       :slots="slots"
       :highlighted="highlighted"
+      :annotations="annotations"
       @hover="hovered = $event"
       @select="select"
     />
@@ -235,6 +288,17 @@ onBeforeUnmount(() => {
         {{ graph.nodes.length }} positions &middot; {{ graph.edges.length }} of
         {{ graph.considered_edges }} moves
       </p>
+      <div v-if="graph && !empty" class="analyse">
+        <button
+          type="button"
+          :disabled="annotationState === 'running'"
+          @click="analyseMoves"
+        >
+          {{ annotationState === "ready" ? "Re-check moves" : "Check moves against the engine" }}
+        </button>
+        <p v-if="annotationNote" class="note">{{ annotationNote }}</p>
+      </div>
+
       <p class="hint">
         A branch takes up as much of the circle as it took of your games. Rings count moves,
         amber ticks mark pruned replies, dashes join lines that transpose. Arrow keys walk the
@@ -382,6 +446,33 @@ input:focus {
   position: absolute;
   left: 16px;
   bottom: 16px;
+}
+.analyse {
+  display: grid;
+  gap: 5px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.analyse button {
+  padding: 5px 9px;
+  background: var(--accent-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: 11.5px;
+  color: var(--accent-bright);
+  transition: background 0.15s var(--ease);
+}
+.analyse button:hover:not(:disabled) {
+  background: rgba(139, 108, 239, 0.26);
+}
+.analyse button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+.analyse .note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--faint);
 }
 .hint {
   margin: 3px 0 0;

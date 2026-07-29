@@ -91,6 +91,15 @@ class Settings(BaseSettings):
     job_result_ttl_s: int = 86400
     job_report_every: int = 250
 
+    # Opening evaluations differ by tens of centipawns between sound moves, so the
+    # floor sits well above the middlegame convention or every repertoire looks bad.
+    annotation_depth: int = 16
+    annotation_dubious_cp: int = 90
+    annotation_mistake_cp: int = 160
+    annotation_blunder_cp: int = 300
+    annotation_min_games: int = 2
+    annotation_budget: int = 400
+
     database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"
     s3_bucket: str | None = None

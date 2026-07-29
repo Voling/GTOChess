@@ -10,6 +10,7 @@ from fiftymoves.ingest.pipeline import IngestProgress, ingest_player
 from fiftymoves.jobs.app import app
 
 IMPORT_TASK = "fiftymoves.import_player"
+ANNOTATE_TASK = "fiftymoves.annotate_player"
 
 
 @app.task(bind=True, name=IMPORT_TASK, max_retries=0)
@@ -33,3 +34,81 @@ def import_player(self: Task, username: str, max_games: int | None = None) -> di
         return {"username": username, "failed": str(exc)}
 
     return result.model_dump()
+
+
+@app.task(bind=True, name=ANNOTATE_TASK, max_retries=0)
+def annotate_player(
+    self: Task,
+    username: str,
+    side: str = "white",
+    max_ply: int = 10,
+    min_volume: int = 2,
+    max_children: int = 4,
+) -> dict[str, Any]:
+    from fiftymoves.analysis.annotations import annotate_graph
+    from fiftymoves.config import EngineNotProvisioned
+    from fiftymoves.domain.games import Side
+    from fiftymoves.engine.stockfish import StockfishEngine
+    from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
+    from fiftymoves.ingest.graph import build_graph
+    from fiftymoves.ingest.pipeline import load_player_games
+
+    settings = get_settings()
+    try:
+        engine_path = settings.resolve_engine_path()
+    except EngineNotProvisioned as exc:
+        return {"username": username, "failed": str(exc).splitlines()[0]}
+
+    games, stamp = load_player_games(username, settings.data_dir)
+    if not games:
+        return {"username": username, "failed": f"no games imported for {username!r} yet"}
+
+    chosen = Side(side)
+    graph = build_graph(
+        games,
+        side=chosen,
+        max_ply=max_ply,
+        min_volume=min_volume,
+        max_children=max_children,
+        family_window_ply=settings.family_window_ply,
+        family_min_games=settings.family_min_games,
+        family_prior_games=settings.family_prior_games,
+        family_slots=settings.family_slots,
+    )
+    shape = shape_key(username, chosen, max_ply, min_volume, max_children, stamp)
+
+    def publish(done: int, total: int) -> None:
+        self.update_state(
+            state="PROGRESS",
+            meta={"username": username, "positions": done, "total": total, "shape": shape},
+        )
+
+    engine = StockfishEngine(
+        str(engine_path), threads=settings.engine_threads, hash_mb=settings.engine_hash_mb
+    )
+    try:
+        result = annotate_graph(
+            engine,
+            graph,
+            username=username,
+            shape=shape,
+            depth=settings.annotation_depth,
+            dubious_cp=settings.annotation_dubious_cp,
+            mistake_cp=settings.annotation_mistake_cp,
+            blunder_cp=settings.annotation_blunder_cp,
+            min_games=settings.annotation_min_games,
+            budget=settings.annotation_budget,
+            on_progress=publish,
+        )
+    finally:
+        engine.close()
+
+    AnnotationStore(settings.data_dir).write(result)
+    return {
+        "username": username,
+        "shape": shape,
+        "annotated": len(result.annotations),
+        "flawed": len(result.flawed),
+        "positions_searched": result.positions_searched,
+        "truncated": result.truncated,
+    }

@@ -131,6 +131,15 @@ def ingest_player(
     )
 
 
+def load_player_games(username: str, directory: Path) -> tuple[list[GameRecord], int]:
+    path = directory / f"{username}.games.jsonl"
+    if not path.exists():
+        return [], 0
+    with path.open(encoding="utf-8") as handle:
+        games = [GameRecord(**json.loads(line)) for line in handle if line.strip()]
+    return games, path.stat().st_mtime_ns
+
+
 def _progress(
     username: str,
     exported: int,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import type { MoveAnnotation } from "../api";
 import { familyColor, HIGHLIGHT, NEUTRAL } from "../families";
 import type { PlacedNode, Placement, Trail } from "../layout";
 
@@ -9,7 +10,25 @@ const props = defineProps<{
   activeDigest: string | null;
   slots: Map<string, number>;
   highlighted: string | null;
+  annotations: Map<string, MoveAnnotation>;
 }>();
+
+const FLAW_COLORS: Record<string, string> = {
+  "??": "#e66767",
+  "?": "#d95926",
+  "?!": "#c98500",
+};
+
+function flagFor(placed: PlacedNode): MoveAnnotation | null {
+  const found = props.annotations.get(placed.node.digest);
+  return found && found.quality !== "sound" ? found : null;
+}
+
+function flagOffset(placed: PlacedNode) {
+  const gap = dotRadius(placed) + 8;
+  if (placed.depth === 0) return { x: 0, y: gap + 9 };
+  return { x: Math.cos(placed.angle) * gap, y: Math.sin(placed.angle) * gap - 7 };
+}
 
 const emit = defineEmits<{ hover: [digest: string | null]; select: [digest: string] }>();
 
@@ -224,6 +243,16 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
             >
               {{ placed.node.san_path.at(-1) ?? "start" }}
             </text>
+            <text
+              v-if="flagFor(placed)"
+              class="flaw"
+              :x="flagOffset(placed).x"
+              :y="flagOffset(placed).y"
+              :style="{ fill: FLAW_COLORS[flagFor(placed)!.quality] }"
+              text-anchor="middle"
+            >
+              {{ flagFor(placed)!.quality }}
+            </text>
           </g>
         </g>
       </g>
@@ -338,6 +367,18 @@ svg.tracing .nodes g.lit .halo {
 .nodes g.lit text,
 .nodes g.active text {
   fill: #ececec;
+}
+.nodes text.flaw {
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 700;
+  stroke-width: 3px;
+}
+svg.tracing .nodes g text.flaw {
+  opacity: 0.35;
+}
+svg.tracing .nodes g.lit text.flaw {
+  opacity: 1;
 }
 
 .zoom {

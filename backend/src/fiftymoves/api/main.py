@@ -16,10 +16,11 @@ from fiftymoves.domain.explanations import Explanation
 from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.engine.stockfish import StockfishEngine
+from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
 from fiftymoves.ingest.graph import build_graph
 from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
 from fiftymoves.ingest.tokens import TokenStore, resolve_token
-from fiftymoves.jobs.tasks import import_player
+from fiftymoves.jobs.tasks import annotate_player, import_player
 from fiftymoves.llm.explain import (
     build_provider,
     cache_key,
@@ -186,6 +187,40 @@ def lichess_auth_callback(code: str = Query(...), state: str = Query(...)) -> di
 @app.delete("/api/auth/lichess", status_code=204)
 def lichess_auth_disconnect() -> None:
     TokenStore.from_settings().clear()
+
+
+@app.get("/api/players/{username}/annotations")
+def player_annotations(
+    username: str,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=12, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=4, ge=1, le=12),
+) -> dict[str, Any]:
+    settings = get_settings()
+    shape = shape_key(username, side, max_ply, min_volume, max_children, import_stamp(username))
+    stored = AnnotationStore(settings.data_dir).read(username, shape)
+    if stored is None:
+        return {"state": "missing", "shape": shape}
+    return {"state": "ready", "shape": shape, "annotations": stored.model_dump()}
+
+
+@app.post("/api/players/{username}/annotations", status_code=202)
+def start_annotation(
+    username: str,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=12, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=4, ge=1, le=12),
+) -> dict[str, str]:
+    handle = annotate_player.delay(username, side.value, max_ply, min_volume, max_children)
+    return {"job_id": handle.id, "state": "queued"}
+
+
+@app.get("/api/annotations/{job_id}")
+def annotation_status(job_id: str) -> dict[str, Any]:
+    handle = annotate_player.AsyncResult(job_id)
+    return {"job_id": job_id, "state": handle.state, "info": handle.info}
 
 
 @app.get("/api/players/{username}/graph", response_model=RepertoireGraph)

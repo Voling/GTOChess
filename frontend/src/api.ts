@@ -27,6 +27,35 @@ export interface OpeningFamily {
   slot: number;
 }
 
+export type MoveQuality = "??" | "?" | "?!" | "sound";
+
+export interface MoveAnnotation {
+  parent: string;
+  child: string;
+  san: string;
+  quality: MoveQuality;
+  loss_cp: number;
+  best_san: string;
+  games: number;
+  by_player: boolean;
+}
+
+export interface AnnotationSet {
+  username: string;
+  shape: string;
+  annotations: MoveAnnotation[];
+  positions_searched: number;
+  edges_considered: number;
+  depth: number;
+  truncated: boolean;
+}
+
+export interface AnnotationResponse {
+  state: "ready" | "missing";
+  shape: string;
+  annotations?: AnnotationSet;
+}
+
 export interface Claim {
   text: string;
   evidence_id: string;
@@ -112,6 +141,24 @@ async function get<T>(path: string): Promise<T> {
 export function fetchGraph(query: GraphQuery): Promise<RepertoireGraph> {
   const user = encodeURIComponent(query.username);
   return get<RepertoireGraph>(`/api/players/${user}/graph?${shapeParams(query)}`);
+}
+
+export function fetchAnnotations(query: GraphQuery): Promise<AnnotationResponse> {
+  const user = encodeURIComponent(query.username);
+  return get<AnnotationResponse>(`/api/players/${user}/annotations?${shapeParams(query)}`);
+}
+
+export async function startAnnotation(query: GraphQuery): Promise<{ job_id: string }> {
+  const user = encodeURIComponent(query.username);
+  const response = await fetch(
+    `/api/players/${user}/annotations?${shapeParams(query)}`,
+    { method: "POST" },
+  );
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new GraphError(detail.detail ?? "could not start the analysis", response.status);
+  }
+  return response.json();
 }
 
 export function fetchExplanation(query: GraphQuery, digest: string): Promise<Explanation> {
