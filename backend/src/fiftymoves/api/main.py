@@ -9,6 +9,7 @@ import chess
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from fiftymoves.cache import LruCache
 from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
 from fiftymoves.domain.explanations import Explanation
 from fiftymoves.domain.games import GameRecord, Side
@@ -58,11 +59,19 @@ def player_games(username: str) -> tuple[GameRecord, ...]:
     return load_games(username, str(data_dir(get_settings())))
 
 
+_graphs: LruCache[RepertoireGraph] = LruCache(max_entries=32)
+
+
 def graph_for(
     username: str, *, side: Side, max_ply: int, min_volume: int, max_children: int
 ) -> RepertoireGraph:
     settings = get_settings()
-    return build_graph(
+    key = f"{username}:{side.value}:{max_ply}:{min_volume}:{max_children}"
+    cached = _graphs.get(key)
+    if cached is not None:
+        return cached
+
+    graph = build_graph(
         player_games(username),
         side=side,
         max_ply=max_ply,
@@ -73,6 +82,8 @@ def graph_for(
         family_prior_games=settings.family_prior_games,
         family_slots=settings.family_slots,
     )
+    _graphs.put(key, graph)
+    return graph
 
 
 @app.get("/health")

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections import Counter
+from contextlib import ExitStack
 from pathlib import Path
 
 from fiftymoves.analysis.profile import opening_edge, repertoire_consistency
@@ -15,12 +17,22 @@ from fiftymoves.ingest.parse import UnusableGame, parse_lichess_game
 from fiftymoves.ingest.repertoire import build_decision_nodes, build_opening_records
 
 
-def run(username: str, *, max_games: int | None, out_dir: Path | None) -> int:
+def run(
+    username: str, *, max_games: int | None, out_dir: Path | None, report_every: int = 500
+) -> int:
     settings = get_settings()
     games: list[GameRecord] = []
     skipped: Counter[str] = Counter()
 
-    with LichessClient.from_settings(settings) as client:
+    games_path = out_dir / f"{username}.games.jsonl" if out_dir else None
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    with ExitStack() as stack:
+        client = stack.enter_context(LichessClient.from_settings(settings))
+        # Written as games arrive so a long export survives an interruption.
+        handle = stack.enter_context(games_path.open("w", encoding="utf-8")) if games_path else None
+
         account = client.account(username)
         counts = account.get("count", {})
         print(
@@ -30,16 +42,34 @@ def run(username: str, *, max_games: int | None, out_dir: Path | None) -> int:
         limit = max_games if max_games is not None else settings.ingest_max_games
         print(f"exporting up to {limit} games, perf={settings.perf_type_list() or 'all'}")
 
-        for raw in client.export_user_games(
+        started = time.monotonic()
+        stream = client.export_user_games(
             username,
             max_games=limit,
             rated=settings.ingest_rated_only or None,
             perf_types=settings.perf_type_list(),
-        ):
+        )
+        for seen, raw in enumerate(stream, start=1):
             try:
-                games.append(parse_lichess_game(raw, username))
+                game = parse_lichess_game(raw, username)
             except UnusableGame as exc:
                 skipped[str(exc)] += 1
+            else:
+                games.append(game)
+                if handle is not None:
+                    handle.write(game.model_dump_json() + "\n")
+
+            if seen % report_every == 0:
+                elapsed = time.monotonic() - started
+                rate = seen / elapsed if elapsed else 0.0
+                remaining = (limit - seen) / rate if rate and limit else 0.0
+                print(
+                    f"  {seen} exported, {len(games)} usable, "
+                    f"{rate:.0f}/s, ~{remaining / 60:.0f} min left"
+                )
+
+    if games_path is not None:
+        print(f"\nwrote {games_path}")
 
     print(f"parsed {len(games)} games, skipped {sum(skipped.values())}")
     for reason, count in skipped.most_common():
@@ -82,16 +112,10 @@ def run(username: str, *, max_games: int | None, out_dir: Path | None) -> int:
         print(f"opening edge: omitted, no opening reached {settings.opening_edge_min_games} games")
 
     if out_dir:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        games_path = out_dir / f"{username}.games.jsonl"
-        with games_path.open("w", encoding="utf-8") as handle:
-            for game in games:
-                handle.write(game.model_dump_json() + "\n")
-        nodes_path = out_dir / f"{username}.nodes.json"
-        nodes_path.write_text(
-            json.dumps([n.model_dump(mode="json") for n in nodes], indent=2), encoding="utf-8"
-        )
-        print(f"\nwrote {games_path}")
+        nodes_path = out_dir / f"{username}.nodes.jsonl"
+        with nodes_path.open("w", encoding="utf-8") as handle:
+            for node in nodes:
+                handle.write(json.dumps(node.model_dump(mode="json")) + "\n")
         print(f"wrote {nodes_path}")
 
     return 0
