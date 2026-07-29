@@ -48,6 +48,12 @@ let drag: { id: number; x: number; y: number; screenX: number; screenY: number }
 let travelled = 0;
 const DRAG_SLOP_PX = 6;
 
+// Capturing the pointer retargets the click to the svg, so a node's own click
+// handler never runs. Capture is therefore deferred until a drag really starts,
+// and selection is decided from press to release rather than from the click.
+let pressed: string | null = null;
+let capturing = false;
+
 watch(
   () => props.placement,
   () => {
@@ -91,13 +97,17 @@ function onPointerDown(event: PointerEvent) {
     screenY: event.clientY,
   };
   travelled = 0;
-  svgEl.value?.setPointerCapture(event.pointerId);
+  capturing = false;
 }
 
 function onPointerMove(event: PointerEvent) {
   if (!drag || drag.id !== event.pointerId) return;
   const point = toLocal(event);
   travelled += Math.abs(event.clientX - drag.screenX) + Math.abs(event.clientY - drag.screenY);
+  if (!capturing && travelled > DRAG_SLOP_PX) {
+    capturing = true;
+    svgEl.value?.setPointerCapture(event.pointerId);
+  }
   view.value = {
     k: view.value.k,
     x: view.value.x + (point.x - drag.x),
@@ -109,14 +119,34 @@ function onPointerMove(event: PointerEvent) {
   drag.screenY = event.clientY;
 }
 
-function onPointerUp(event: PointerEvent) {
-  if (drag?.id === event.pointerId) svgEl.value?.releasePointerCapture(event.pointerId);
+function release(event: PointerEvent) {
+  if (capturing && drag?.id === event.pointerId) {
+    svgEl.value?.releasePointerCapture(event.pointerId);
+  }
+  capturing = false;
   drag = null;
 }
 
+function onPointerUp(event: PointerEvent) {
+  release(event);
+  if (pressed !== null && travelled <= DRAG_SLOP_PX) emit("select", pressed);
+  pressed = null;
+}
+
+function onPointerCancel(event: PointerEvent) {
+  release(event);
+  pressed = null;
+}
+
+// Fallback for environments where a click arrives without pointer events.
+// Selecting is idempotent, so both paths firing is harmless.
 function onNodeClick(placed: PlacedNode) {
   if (travelled > DRAG_SLOP_PX) return;
   emit("select", placed.node.digest);
+}
+
+function onNodePointerDown(placed: PlacedNode) {
+  pressed = placed.node.digest;
 }
 
 function nudgeZoom(factor: number) {
@@ -187,7 +217,7 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
-      @pointercancel="onPointerUp"
+      @pointercancel="onPointerCancel"
     >
       <g :transform="`translate(${view.x},${view.y}) scale(${view.k})`">
         <g class="rings">
@@ -230,6 +260,7 @@ const ringLabel = (depth: number) => (depth % 2 === 0 ? String(depth / 2) : "");
             }"
             @pointerenter="emit('hover', placed.node.digest)"
             @pointerleave="emit('hover', null)"
+            @pointerdown="onNodePointerDown(placed)"
             @click="onNodeClick(placed)"
           >
             <circle class="hit" :r="hitRadius(placed)" />
