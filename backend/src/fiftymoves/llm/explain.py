@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 import chess
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from fiftymoves.analysis.landscape import compute_landscape
 from fiftymoves.analysis.sensitivity import compute_sensitivity
 from fiftymoves.cache import LruCache
-from fiftymoves.domain.book import MoveCost
+from fiftymoves.domain.book import PositionLosses
 from fiftymoves.domain.explanations import Evidence, Explanation
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.models import (
@@ -18,8 +19,10 @@ from fiftymoves.domain.models import (
     SensitivityReport,
 )
 from fiftymoves.domain.openings import OpeningFamily
+from fiftymoves.domain.storyboard import Storyboard
 from fiftymoves.engine.attribution import attribute
 from fiftymoves.engine.protocol import EngineProvider
+from fiftymoves.llm.board import BoardSession
 from fiftymoves.llm.facts import build_evidence
 from fiftymoves.llm.mistakes import Mistake, build_mistake_evidence
 from fiftymoves.llm.provider import (
@@ -38,6 +41,23 @@ class PositionStudy(BaseModel):
     sensitivity: SensitivityReport
     landscape: EvalLandscape
     attribution: PositionAttribution | None = None
+
+
+class PersonalContext(BaseModel):
+    node: GraphNode
+    family: OpeningFamily | None = None
+    continuations: tuple[GraphEdge, ...] = ()
+
+    def fingerprint(self) -> str:
+        parts = [
+            self.node.digest,
+            "/".join(self.node.san_path),
+            str(self.node.games),
+            f"{self.node.score:.4f}",
+            self.family.key if self.family else "",
+            ",".join(f"{e.uci}:{e.games}" for e in self.continuations),
+        ]
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 ExplanationCache = LruCache[Explanation]
@@ -71,9 +91,14 @@ def study_key(digest: str, pipeline_version: str, depth: int, ablation_depth: in
     return f"{pipeline_version}:d{depth}:a{ablation_depth}:{digest}"
 
 
-def cache_key(digest: str, pipeline_version: str, provider: ExplanationProvider) -> str:
-    """Keyed by position alone, so one paid call serves every player who lands here."""
-    return f"{pipeline_version}:{provider.name}:{provider.model or 'none'}:{digest}"
+def cache_key(
+    digest: str,
+    pipeline_version: str,
+    provider: ExplanationProvider,
+    personal: PersonalContext | None = None,
+) -> str:
+    key = f"{pipeline_version}:{provider.name}:{provider.model or 'none'}:{digest}"
+    return key if personal is None else f"{key}:{personal.fingerprint()}"
 
 
 def ground(
@@ -114,8 +139,6 @@ def study_position(
     binary_path: str | None = None,
 ) -> PositionStudy:
     report = engine.analyse(board, depth=depth, multipv=multipv)
-    # Stockfish will account for its own evaluation per piece if asked, which
-    # costs one call and no search.
     attribution = attribute(binary_path, board) if binary_path else None
     return PositionStudy(
         report=report,
@@ -131,37 +154,89 @@ def explain_position(
     provider: ExplanationProvider,
     digest: str,
     engine: EngineProvider | None = None,
-    node: GraphNode | None = None,
-    family: OpeningFamily | None = None,
-    continuations: Sequence[GraphEdge] = (),
+    personal: PersonalContext | None = None,
+    shared: bool = True,
     depth: int = 18,
     ablation_depth: int = 12,
     multipv: int = 3,
     study: PositionStudy | None = None,
     probe: EngineProbe | None = None,
 ) -> Explanation:
+    if personal is not None and shared:
+        raise ValueError(
+            "a shared explanation is keyed by position alone, so it cannot carry one "
+            "player's counts. Pass shared=False and key it with cache_key(..., personal)."
+        )
     if study is None:
         if engine is None:
             raise ValueError("explain_position needs either an engine or a prepared study")
         study = study_position(
             board, engine=engine, depth=depth, ablation_depth=ablation_depth, multipv=multipv
         )
+    node = personal.node if personal else None
     evidence = build_evidence(
         board,
         study.report,
         study.sensitivity,
         study.landscape,
         node=node,
-        family=family,
-        continuations=continuations,
+        family=personal.family if personal else None,
+        continuations=personal.continuations if personal else (),
         attribution=study.attribution,
     )
     draft = provider.explain(brief_for(board, node), evidence, probe)
-    # Anything the engine answered mid-conversation is evidence too, so a claim
-    # resting on a probe still has to cite something real.
     if probe is not None:
         evidence = [*evidence, *probe.evidence]
     return ground(digest, draft, evidence, provider)
+
+
+class Analysis(BaseModel):
+    explanation: Explanation
+    storyboard: Storyboard
+
+
+def analysis_key(digest: str, pipeline_version: str, provider: ExplanationProvider) -> str:
+    return f"{pipeline_version}:board:{provider.name}:{provider.model or 'none'}:{digest}"
+
+
+def analyse_position(
+    board: chess.Board,
+    *,
+    provider: ExplanationProvider,
+    engine: EngineProvider,
+    digest: str,
+    node: GraphNode | None = None,
+    depth: int = 14,
+    max_calls: int = 8,
+    seed: Sequence[Evidence] = (),
+    ask: str | None = None,
+) -> Analysis:
+    session = BoardSession(engine, board, depth=depth, max_calls=max_calls)
+    brief = brief_for(board, node)
+    request = ask or "Show what this position turns on, on the board."
+    draft = provider.explain(brief, seed, session, persona=Persona.ANALYST, ask=request)
+
+    if session.scenes == 0 and session.unshown:
+        draft = provider.explain(
+            brief,
+            [*seed, *session.evidence],
+            session,
+            persona=Persona.ANALYST,
+            ask=(
+                f"{request} You walked "
+                f"{', '.join(session.unshown)} but put none of them on the board. "
+                "Call show_line on the one that carries the point, with a note per "
+                "move, then answer."
+            ),
+        )
+    if session.scenes == 0:
+        session.show_longest_walk()
+
+    evidence = [*seed, *session.evidence]
+    return Analysis(
+        explanation=ground(digest, draft, evidence, provider),
+        storyboard=session.storyboard(),
+    )
 
 
 def mistake_key(parent_digest: str, uci: str, pipeline_version: str, provider_name: str) -> str:
@@ -173,12 +248,11 @@ def explain_mistake(
     *,
     provider: ExplanationProvider,
     engine: EngineProvider,
-    cost: MoveCost,
+    cost: PositionLosses,
     played_uci: str,
     node: GraphNode | None = None,
     probe: EngineProbe | None = None,
 ) -> Explanation:
-    """Why one move gave ground, keyed by the move rather than the position."""
     mistake = Mistake(board, played_uci, cost)
     evidence = build_mistake_evidence(engine, mistake, depth=cost.depth)
     draft = provider.explain(

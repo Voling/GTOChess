@@ -44,6 +44,17 @@ class GraphEdge(BaseModel):
     san: str
     games: int
     by_player: bool
+    wins: int = 0
+    draws: int = 0
+    losses: int = 0
+
+    @property
+    def decided(self) -> int:
+        return self.wins + self.draws + self.losses
+
+    @property
+    def score(self) -> float:
+        return (self.wins + self.draws / 2) / self.decided if self.decided else 0.5
 
 
 class OpeningName(BaseModel):

@@ -6,11 +6,24 @@ from pathlib import Path
 from typing import Any
 
 import chess
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from fiftymoves.analysis.annotations import classify
-from fiftymoves.analysis.book import score_openings
+from fiftymoves.analysis.book import (
+    BOOK_MAX_CHILDREN,
+    BOOK_MAX_PLY,
+    BOOK_MIN_VOLUME,
+    score_openings,
+)
+from fiftymoves.analysis.outcomes import measure_outcomes
+from fiftymoves.api.auth import (
+    AuthError,
+    Principal,
+    bearer_token,
+    get_limiter,
+    verify_token,
+)
 from fiftymoves.api.imports import ImportJob, read_job
 from fiftymoves.cache import LruCache
 from fiftymoves.config import EngineNotProvisioned, Settings, get_settings
@@ -20,16 +33,21 @@ from fiftymoves.domain.explanations import Explanation
 from fiftymoves.domain.games import GameRecord, Side
 from fiftymoves.domain.graph import RepertoireGraph
 from fiftymoves.domain.knowledge import KnowledgeView, PlanNeighbour
+from fiftymoves.domain.outcomes import OutcomeReport
 from fiftymoves.engine.stockfish import StockfishEngine
+from fiftymoves.ingest.analysis_store import AnalysisStore
 from fiftymoves.ingest.annotations_store import AnnotationStore, shape_key
-from fiftymoves.ingest.cost_store import MoveCostStore
 from fiftymoves.ingest.explanation_store import ExplanationStore
 from fiftymoves.ingest.graph import GameWalk, prune_walk, walk_games
 from fiftymoves.ingest.knowledge_store import KnowledgeStore
+from fiftymoves.ingest.loss_store import LossStore
 from fiftymoves.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
 from fiftymoves.ingest.tokens import TokenStore, resolve_token
 from fiftymoves.jobs.tasks import annotate_player, import_player, learn_positions
 from fiftymoves.llm.explain import (
+    Analysis,
+    analyse_position,
+    analysis_key,
     build_provider,
     cache_key,
     explain_mistake,
@@ -51,9 +69,36 @@ _pending: LruCache[PendingAuthorization] = LruCache(max_entries=16)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+def spender(authorization: str | None = Header(default=None)) -> Principal:
+    """Guards the endpoints that cost money.
+
+    A press here is a model call on this account's bill, so it needs both a
+    verified account and room under that account's daily ceiling. The free
+    endpoints that read what has already been paid for stay open.
+    """
+    settings = get_settings()
+    if not settings.auth_required:
+        return Principal(subject="anonymous", username="anonymous")
+
+    token = bearer_token(authorization)
+    if token is None:
+        raise HTTPException(status_code=401, detail="sign in to run an analysis")
+
+    try:
+        principal = verify_token(token, settings=settings)
+        get_limiter().charge(principal.subject)
+    except AuthError as exc:
+        status = 429 if "ceiling" in str(exc) else 401
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return principal
+
+
+SPENDER = Depends(spender)
 
 
 def data_dir(settings: Settings) -> Path:
@@ -93,7 +138,6 @@ def load_games(username: str, directory: str, stamp: int) -> tuple[GameRecord, .
 
 
 def player_games(username: str) -> tuple[GameRecord, ...]:
-    # The stamp is part of the key so a worker rewriting the file busts the cache.
     return load_games(username, str(data_dir(get_settings())), import_stamp(username))
 
 
@@ -116,8 +160,6 @@ def walk_cache() -> LruCache[GameWalk]:
 
 
 def walk_for(username: str, *, side: Side, max_ply: int) -> GameWalk:
-    # Replaying the games is the expensive half and only depth and colour change
-    # it, so the volume and branch controls reuse this.
     walks = walk_cache()
     key = f"{username}:{import_stamp(username)}:{side.value}:{max_ply}"
     cached = walks.get(key)
@@ -326,7 +368,6 @@ def player_graph(
 
 @app.get("/api/players/{username}/positions/{digest}/explanation")
 def read_explanation(username: str, digest: str) -> dict[str, Any]:
-    """Never spends money. Returns what has already been written for this position."""
     settings = get_settings()
     provider = configured_provider(settings)
     key = cache_key(digest, settings.pipeline_version, provider)
@@ -346,12 +387,12 @@ def read_explanation(username: str, digest: str) -> dict[str, Any]:
 def write_explanation(
     username: str,
     digest: str,
+    caller: Principal = SPENDER,
     side: Side = DEFAULT_SIDE,
     max_ply: int = Query(default=12, ge=1, le=40),
     min_volume: int = Query(default=1, ge=1),
     max_children: int = Query(default=4, ge=1, le=12),
 ) -> Explanation:
-    """Spends a model call. One per position, then shared by everyone."""
     settings = get_settings()
     provider = configured_provider(settings)
     key = cache_key(digest, settings.pipeline_version, provider)
@@ -410,8 +451,6 @@ def write_explanation(
         )
 
         try:
-            # Nothing player specific goes in: the result is about the position,
-            # so every player who reaches it reads the same explanation.
             explanation = explain_position(
                 board, provider=provider, digest=digest, study=study, probe=probe
             )
@@ -426,36 +465,31 @@ def write_explanation(
     return explanation
 
 
-@app.get("/api/players/{username}/costs")
-def player_costs(
+@app.get("/api/players/{username}/move-losses")
+def player_move_losses(
     username: str,
     side: Side = DEFAULT_SIDE,
     max_ply: int = Query(default=12, ge=1, le=40),
     min_volume: int = Query(default=1, ge=1),
     max_children: int = Query(default=4, ge=1, le=12),
 ) -> dict[str, Any]:
-    """Move costs for this graph, read from a store keyed by position.
-
-    Pricing does not depend on how the graph was pruned, so a slider nudge reads
-    the same records rather than discarding hours of engine time.
-    """
     settings = get_settings()
     graph = graph_for(
         username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
     )
-    costs = MoveCostStore(settings.data_dir)
+    costs = LossStore(settings.data_dir)
     marks: list[dict[str, Any]] = []
-    priced = 0
+    measured = 0
     for edge in graph.edges:
         if not edge.by_player:
             continue
         cost = costs.get(edge.parent)
         if cost is None:
             continue
-        loss = cost.loss(edge.uci)
+        loss = cost.for_move(edge.uci)
         if loss is None:
             continue
-        priced += 1
+        measured += 1
         quality = classify(loss)
         if quality is MoveQuality.SOUND:
             continue
@@ -473,37 +507,116 @@ def player_costs(
             }
         )
     marks.sort(key=lambda m: (-int(m["loss_cp"]), -int(m["games"])))
-    return {"priced_moves": priced, "flagged": len(marks), "marks": marks}
+    return {"measured_moves": measured, "flagged": len(marks), "marks": marks}
+
+
+@app.get("/api/players/{username}/outcomes", response_model=OutcomeReport)
+def player_outcomes(username: str, side: Side = DEFAULT_SIDE) -> OutcomeReport:
+    settings = get_settings()
+    # How the flagged moves actually turn out is a fact about the player, so it is
+    # measured on the whole repertoire rather than on whatever slice is on screen.
+    graph = graph_for(
+        username,
+        side=side,
+        max_ply=BOOK_MAX_PLY,
+        min_volume=BOOK_MIN_VOLUME,
+        max_children=BOOK_MAX_CHILDREN,
+    )
+    store = LossStore(settings.data_dir)
+    held = {n.digest: r for n in graph.nodes if (r := store.get(n.digest)) is not None}
+    return measure_outcomes(graph, held)
 
 
 @app.get("/api/players/{username}/opening-phase", response_model=OpeningPhase)
-def opening_phase(
-    username: str,
-    side: Side = DEFAULT_SIDE,
-    max_ply: int = Query(default=28, ge=1, le=40),
-    min_volume: int = Query(default=1, ge=1),
-    max_children: int = Query(default=12, ge=1, le=12),
-) -> OpeningPhase:
+def opening_phase(username: str, side: Side = DEFAULT_SIDE) -> OpeningPhase:
     settings = get_settings()
+    # How far the book runs is a fact about the player, so it is measured on the
+    # whole repertoire rather than on whatever slice is on screen.
     graph = graph_for(
-        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+        username,
+        side=side,
+        max_ply=BOOK_MAX_PLY,
+        min_volume=BOOK_MIN_VOLUME,
+        max_children=BOOK_MAX_CHILDREN,
     )
-    store = MoveCostStore(settings.data_dir)
+    store = LossStore(settings.data_dir)
     costs = {n.digest: c for n in graph.nodes if (c := store.get(n.digest)) is not None}
     return score_openings(graph, costs)
 
 
-@app.post("/api/players/{username}/positions/{digest}/moves/{uci}/explanation")
-def explain_move(username: str, digest: str, uci: str) -> Explanation:
-    """Why one move gave ground. Costs a model call, so it is a POST."""
+@app.get("/api/players/{username}/positions/{digest}/analysis")
+def read_analysis(username: str, digest: str) -> dict[str, Any]:
     settings = get_settings()
     provider = configured_provider(settings)
-    costs = MoveCostStore(settings.data_dir)
+    held = AnalysisStore(settings.data_dir).get(
+        analysis_key(digest, settings.pipeline_version, provider)
+    )
+    if held is None:
+        return {"state": "missing", "model": provider.model}
+    return {"state": "ready", "analysis": held.model_dump(mode="json")}
+
+
+@app.post("/api/players/{username}/positions/{digest}/analysis")
+def build_analysis(
+    username: str,
+    digest: str,
+    caller: Principal = SPENDER,
+    side: Side = DEFAULT_SIDE,
+    max_ply: int = Query(default=12, ge=1, le=40),
+    min_volume: int = Query(default=1, ge=1),
+    max_children: int = Query(default=4, ge=1, le=12),
+) -> Analysis:
+    settings = get_settings()
+    provider = configured_provider(settings)
+    key = analysis_key(digest, settings.pipeline_version, provider)
+    store = AnalysisStore(settings.data_dir)
+    held = store.get(key)
+    if held is not None:
+        return held
+
+    graph = graph_for(
+        username, side=side, max_ply=max_ply, min_volume=min_volume, max_children=max_children
+    )
+    node = next((n for n in graph.nodes if n.digest == digest), None)
+    if node is None:
+        raise HTTPException(status_code=404, detail="position is not in this graph")
+    try:
+        engine_path = settings.resolve_engine_path()
+    except EngineNotProvisioned as exc:
+        raise HTTPException(status_code=503, detail=str(exc).splitlines()[0]) from exc
+
+    board = chess.Board(f"{node.epd} 0 1")
+    engine = StockfishEngine(
+        str(engine_path), threads=settings.engine_threads, hash_mb=settings.engine_hash_mb
+    )
+    try:
+        analysis = analyse_position(
+            board,
+            provider=provider,
+            engine=engine,
+            digest=digest,
+            depth=settings.llm_probe_depth,
+            max_calls=settings.llm_probe_max_calls,
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        engine.close()
+
+    store.put(key, analysis)
+    return analysis
+
+
+@app.post("/api/players/{username}/positions/{digest}/moves/{uci}/explanation")
+def explain_move(username: str, digest: str, uci: str, caller: Principal = SPENDER) -> Explanation:
+    settings = get_settings()
+    provider = configured_provider(settings)
+    costs = LossStore(settings.data_dir)
     cost = costs.get(digest)
     if cost is None:
-        raise HTTPException(status_code=404, detail="this position has not been priced yet")
-    if cost.loss(uci) is None:
-        raise HTTPException(status_code=404, detail="that move was not priced from this position")
+        raise HTTPException(status_code=404, detail="this position has not been measured yet")
+    if cost.for_move(uci) is None:
+        raise HTTPException(status_code=404, detail="that move was not measured from this position")
 
     key = mistake_key(digest, uci, settings.pipeline_version, provider.name)
     store = ExplanationStore(settings.data_dir)

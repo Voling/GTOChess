@@ -6,27 +6,42 @@ from collections.abc import Sequence
 
 import chess
 
-from fiftymoves.domain.book import FamilyBook, MoveAccuracy, MoveCost, OpeningPhase
+from fiftymoves.domain.book import FamilyBook, MoveAccuracy, OpeningPhase, PositionLosses
 from fiftymoves.domain.graph import GraphEdge, RepertoireGraph
+from fiftymoves.domain.models import MAX_LOSS_CP
 from fiftymoves.engine.protocol import EngineProvider
 
 CLEAN_BAND_CP = 50
 PRIOR_GAMES = 25
+BOOK_MAX_GAP = 2
+BOOK_TOLERATED_LAPSES = 1
+
+# Below this a line is not a pattern, it is a one-off. Carrying rarer edges into
+# an analysis graph costs a great deal and buys nothing, because nothing under
+# this floor is ever measured, scored or flagged.
+MIN_VOLUME = 3
+
+BOOK_MAX_PLY = 28
+BOOK_MIN_VOLUME = MIN_VOLUME
+BOOK_MAX_CHILDREN = 12
 
 
 def _mover_cp(score_cp: int, white_to_move: bool) -> int:
     return score_cp if white_to_move else -score_cp
 
 
-def price_position(
+def _loss(best_cp: int, played_cp: int) -> int:
+    return min(MAX_LOSS_CP, max(0, best_cp - played_cp))
+
+
+def measure_losses(
     engine: EngineProvider,
     board: chess.Board,
     replies: Sequence[str],
     *,
     digest: str,
     depth: int,
-) -> MoveCost:
-    """One search prices every reply, because multi-PV already ranks them all."""
+) -> PositionLosses:
     multipv = max(len(replies) + 2, 6)
     report = engine.analyse(board, depth=depth, multipv=multipv)
     white = board.turn == chess.WHITE
@@ -36,11 +51,9 @@ def price_position(
     losses: dict[str, int] = {}
     sans: dict[str, str] = {}
     for line in report.lines:
-        losses[line.move_uci] = max(0, best_cp - _mover_cp(line.score_cp, white))
+        losses[line.move_uci] = _loss(best_cp, _mover_cp(line.score_cp, white))
         sans[line.move_uci] = line.move_san
 
-    # A reply the engine never listed is rare and always bad. It still needs a
-    # number rather than a guess, so it gets its own search.
     for uci in replies:
         if uci in losses:
             continue
@@ -54,9 +67,9 @@ def price_position(
         child = board.copy(stack=False)
         child.push(move)
         after = engine.analyse(child, depth=depth, multipv=1)
-        losses[uci] = max(0, best_cp - _mover_cp(after.score_cp, white))
+        losses[uci] = _loss(best_cp, _mover_cp(after.score_cp, white))
 
-    return MoveCost(
+    return PositionLosses(
         digest=digest,
         epd=board.epd(),
         depth=depth,
@@ -66,6 +79,37 @@ def price_position(
         losses=losses,
         sans=sans,
     )
+
+
+def book_depth(
+    accuracies: Sequence[MoveAccuracy],
+    *,
+    band_cp: int = CLEAN_BAND_CP,
+    max_gap: int = BOOK_MAX_GAP,
+    tolerated: int = BOOK_TOLERATED_LAPSES,
+) -> int:
+    """The last full move the player's opening still holds the band.
+
+    One move over the band is a specific problem, not the end of what the
+    player knows, so an isolated lapse is carried and only a run of them ends
+    the book. Full moves nobody measured are skipped rather than treated as
+    failures, since the sweep only prices positions above its volume floor.
+    """
+    depth = 0
+    lapses = 0
+    previous: int | None = None
+    for entry in accuracies:
+        if previous is not None and entry.full_move - previous > max_gap:
+            break
+        if entry.mean_loss_cp > band_cp:
+            lapses += 1
+            if lapses > tolerated:
+                break
+        else:
+            lapses = 0
+            depth = entry.full_move
+        previous = entry.full_move
+    return depth
 
 
 def _shrink(value: float, weight: float, population: float, prior: float) -> float:
@@ -99,19 +143,12 @@ class _Bucket:
 
 def score_openings(
     graph: RepertoireGraph,
-    costs: dict[str, MoveCost],
+    costs: dict[str, PositionLosses],
     *,
     band_cp: int = CLEAN_BAND_CP,
     prior_games: int = PRIOR_GAMES,
     min_games: int = 4,
 ) -> OpeningPhase:
-    """Score how far the player's opening holds, per family and overall.
-
-    Two things would otherwise make this meaningless. Repeating one line 1400
-    times is a single piece of knowledge, not 1400, so a position counts by the
-    square root of its volume. And a family seen a dozen times cannot claim a
-    deep book, so its depth is pulled toward the player's own average.
-    """
     nodes = {n.digest: n for n in graph.nodes}
     by_parent: dict[str, list[GraphEdge]] = defaultdict(list)
     for edge in graph.edges:
@@ -128,14 +165,14 @@ def score_openings(
         cost = costs.get(digest)
         if node is None or cost is None:
             continue
-        priced = [(e, cost.loss(e.uci)) for e in edges]
-        priced = [(e, loss) for e, loss in priced if loss is not None]
-        if not priced:
+        known = [(e, cost.for_move(e.uci)) for e in edges]
+        known = [(e, loss) for e, loss in known if loss is not None]
+        if not known:
             continue
 
-        played = sum(e.games for e, _ in priced)
-        mean_loss = sum((loss or 0) * e.games for e, loss in priced) / played
-        clean = sum(e.games for e, loss in priced if (loss or 0) <= band_cp) / played
+        played = sum(e.games for e, _ in known)
+        mean_loss = sum((loss or 0) * e.games for e, loss in known) / played
+        clean = sum(e.games for e, loss in known if (loss or 0) <= band_cp) / played
 
         family = node.family or "unclassified"
         full_move = node.depth_ply // 2 + 1
@@ -157,16 +194,7 @@ def score_openings(
     drafts: dict[str, tuple[tuple[MoveAccuracy, ...], int, float, float]] = {}
     for family, per_move in buckets.items():
         accuracies = tuple(per_move[m].accuracy(m) for m in sorted(per_move))
-        # Counted from where the family first appears, not from move 1: only the
-        # opening the player answers most owns the root, and every other family
-        # becomes identifiable a move or two later.
-        depth = 0
-        expected = accuracies[0].full_move if accuracies else 0
-        for entry in accuracies:
-            if entry.full_move != expected or entry.mean_loss_cp > band_cp:
-                break
-            depth = entry.full_move
-            expected += 1
+        depth = book_depth(accuracies, band_cp=band_cp)
         weight = sum(per_move[m].weight for m in per_move)
         loss = sum(per_move[m].loss for m in per_move) / weight if weight else 0.0
         clean = sum(per_move[m].clean for m in per_move) / weight if weight else 0.0

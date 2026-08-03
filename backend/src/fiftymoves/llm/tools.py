@@ -89,6 +89,10 @@ class EngineProbe:
     def calls(self) -> int:
         return self._calls
 
+    @property
+    def schema(self) -> list[dict[str, Any]]:
+        return TOOLS
+
     def _walk(self, moves_san: list[str]) -> tuple[chess.Board, str]:
         if len(moves_san) > self._max_moves:
             raise ProbeLimit(f"at most {self._max_moves} moves per probe")

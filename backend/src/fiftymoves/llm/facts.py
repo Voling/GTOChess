@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 import chess
 
+from fiftymoves.analysis.structure import compute_structure
 from fiftymoves.domain.explanations import Evidence, EvidenceKind
 from fiftymoves.domain.graph import GraphEdge, GraphNode
 from fiftymoves.domain.models import (
@@ -15,12 +16,12 @@ from fiftymoves.domain.models import (
     SensitivityReport,
 )
 from fiftymoves.domain.openings import OpeningFamily
+from fiftymoves.domain.structure import PawnShape, Structure
 
 PAWN = 100.0
 
 
 def pawns(score_cp: int) -> str:
-    """Evaluations read in pawns, the way players quote them."""
     return f"{score_cp / PAWN:+.2f}"
 
 
@@ -67,11 +68,17 @@ def _sensitivity_statement(item: SensitivityItem) -> str:
     swing = abs(item.delta_cp)
     if item.kind is AblationKind.PIECE_REMOVAL and item.square:
         piece = item.piece_symbol or "piece"
-        worth = "more" if item.residual_cp * item.expected_cp > 0 else "less"
+        gap = pawns(abs(item.residual_cp))
+        if item.residual_cp * item.expected_cp > 0:
+            tail = f"{gap} more than its material value alone, so it is doing extra work here"
+        else:
+            tail = (
+                f"{gap} less than its material value alone, so it is doing less "
+                "than a piece of its kind usually does here"
+            )
         return (
             f"Removing the {piece} on {item.square} {direction} the evaluation by "
-            f"{pawns(swing)}, which is {pawns(abs(item.residual_cp))} {worth} than "
-            f"its material value alone, so it is doing that much extra work here."
+            f"{pawns(swing)}, which is {tail}."
         )
     if item.kind is AblationKind.MOVE_SPACE:
         return (
@@ -101,17 +108,97 @@ def _attribution_statement(attribution: PositionAttribution) -> str | None:
     )
 
 
-def _landscape_statement(landscape: EvalLandscape) -> str:
-    if landscape.is_single_answer:
-        return (
-            f"Only one move holds the position: the second best is "
-            f"{pawns(landscape.delta_to_second_cp or 0)} worse across "
-            f"{landscape.legal_move_count} legal moves."
-        )
+def _shape_statement(landscape: EvalLandscape) -> str | None:
+    if not landscape.is_single_answer:
+        return None
     return (
-        f"{landscape.playable_move_count} of {landscape.legal_move_count} legal moves stay "
-        f"within the playable band, so the position tolerates more than one idea."
+        f"Only one move holds the position: the second best is "
+        f"{pawns(landscape.delta_to_second_cp or 0)} worse across "
+        f"{landscape.legal_move_count} legal moves."
     )
+
+
+def _and_list(items: Sequence[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _record_phrase(edge: GraphEdge) -> str:
+    if not edge.decided:
+        return f"{edge.san} in {edge.games} games"
+    return (
+        f"{edge.san} in {edge.games} games scoring {edge.score:.0%}, "
+        f"{edge.wins} wins {edge.draws} draws {edge.losses} losses"
+    )
+
+
+def _coverage_statement(landscape: EvalLandscape, continuations: Sequence[GraphEdge]) -> str | None:
+    allowed = landscape.playable
+    if not allowed:
+        return None
+    if not continuations:
+        return (
+            f"The engine allows {len(allowed)} moves here: {_and_list([m.san for m in allowed])}."
+        )
+
+    played = {e.uci: e for e in continuations}
+    covered = [m for m in allowed if m.uci in played]
+    never = [m.san for m in allowed if m.uci not in played]
+    allowed_ucis = {m.uci for m in allowed}
+    outside = [e for e in continuations if e.uci not in allowed_ucis]
+
+    parts = [f"You play {len(covered)} of the {len(allowed)} moves the engine allows here."]
+    parts.extend(f"{_record_phrase(played[m.uci])}." for m in covered)
+    if never:
+        parts.append(f"You have never played {_and_list(never)}.")
+    if outside:
+        parts.append(
+            f"Outside that set you play {_and_list([_record_phrase(e) for e in outside[:3]])}."
+        )
+    return " ".join(parts)
+
+
+def _pawns_are(squares: tuple[str, ...]) -> str:
+    return f"{_and_list(list(squares))} {'are' if len(squares) > 1 else 'is'}"
+
+
+def _shape_phrases(shape: PawnShape, side: str) -> list[str]:
+    parts = []
+    if shape.doubled:
+        parts.append(f"{side} has doubled pawns on {_and_list(list(shape.doubled))}")
+    if shape.isolated:
+        parts.append(f"{side}'s {_pawns_are(shape.isolated)} isolated")
+    if shape.backward:
+        parts.append(f"{side}'s {_pawns_are(shape.backward)} backward")
+    if shape.passed:
+        plural = "passed pawns" if len(shape.passed) > 1 else "a passed pawn"
+        parts.append(f"{side} has {plural} on {_and_list(list(shape.passed))}")
+    if shape.outposts:
+        parts.append(f"{side} holds {_and_list(list(shape.outposts)[:3])} with a pawn behind it")
+    return parts
+
+
+def _structure_statement(structure: Structure) -> str | None:
+    parts = _shape_phrases(structure.white, "White") + _shape_phrases(structure.black, "Black")
+    if structure.open_files:
+        parts.append(f"the {_and_list(list(structure.open_files))} file is open")
+    if not parts:
+        return None
+    return f"{'. '.join(part[0].upper() + part[1:] for part in parts)}."
+
+
+def _weakness_statement(structure: Structure) -> str | None:
+    parts = []
+    if structure.white.weak_squares:
+        held = _and_list(list(structure.white.weak_squares)[:4])
+        parts.append(f"White's pawns can no longer cover {held}")
+    if structure.black.weak_squares:
+        held = _and_list(list(structure.black.weak_squares)[:4])
+        parts.append(f"Black's pawns can no longer cover {held}")
+    if not parts:
+        return None
+    return f"{'. '.join(parts)}."
 
 
 def _repertoire_statement(node: GraphNode) -> str:
@@ -174,9 +261,23 @@ def build_evidence(
             )
         )
 
-    evidence.append(
-        Evidence(id="shape", kind=EvidenceKind.LANDSCAPE, statement=_landscape_statement(landscape))
-    )
+    shape = _shape_statement(landscape)
+    if shape:
+        evidence.append(Evidence(id="shape", kind=EvidenceKind.LANDSCAPE, statement=shape))
+
+    # Computed from the board, never asked of the model, so a motif can only be
+    # discussed when it is actually there.
+    structure = compute_structure(board)
+    pawns = _structure_statement(structure)
+    if pawns:
+        evidence.append(Evidence(id="pawns", kind=EvidenceKind.LANDSCAPE, statement=pawns))
+    holes = _weakness_statement(structure)
+    if holes:
+        evidence.append(Evidence(id="holes", kind=EvidenceKind.LANDSCAPE, statement=holes))
+
+    coverage = _coverage_statement(landscape, continuations)
+    if coverage:
+        evidence.append(Evidence(id="covers", kind=EvidenceKind.LANDSCAPE, statement=coverage))
 
     if attribution is not None:
         statement = _attribution_statement(attribution)

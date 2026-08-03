@@ -46,11 +46,15 @@ function flagOffset(placed: PlacedNode) {
 
 const emit = defineEmits<{ hover: [digest: string | null]; select: [digest: string] }>();
 
-const VIEW = 486;
+const VIEW_MARGIN = 1.13;
 const LIT = 0.34;
 const BLOOM = 0.56;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 6;
+
+// The layout widens itself when a tree cannot be seated at the requested radius,
+// so the frame has to follow it rather than clip the outer rings away.
+const VIEW = computed(() => props.placement.radius * VIEW_MARGIN);
 
 const svgEl = ref<SVGSVGElement | null>(null);
 const view = ref({ k: 1, x: 0, y: 0 });
@@ -183,8 +187,20 @@ const dotCeiling = computed(() => props.placement.ringGap * 0.34);
 // The ring needs its own space; below that it just thickens the dot.
 const showScoreRings = computed(() => props.placement.ringGap >= 14);
 
+// A dot also has to fit the arc it owns. Out at the rim a node's slice is a few
+// pixels wide however far apart the rings are, so capping on the ring gap alone
+// lets neighbours run together.
+const arcCeiling = (placed: PlacedNode) =>
+  placed.radius > 0
+    ? Math.max(1.7, placed.span * placed.radius * 0.42)
+    : dotCeiling.value;
+
 const dotRadius = (placed: PlacedNode) =>
-  Math.min((2.2 + placed.intensity * 8.5) * density.value, dotCeiling.value);
+  Math.min(
+    (2.2 + placed.intensity * 8.5) * density.value,
+    dotCeiling.value,
+    arcCeiling(placed),
+  );
 const hitRadius = (placed: PlacedNode) => Math.max(dotRadius(placed) + 4, 8);
 const isLit = (placed: PlacedNode) => placed.intensity >= LIT;
 const blooms = (placed: PlacedNode) => placed.intensity >= BLOOM;

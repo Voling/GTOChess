@@ -14,6 +14,7 @@ from fiftymoves.domain.models import Variant
 from fiftymoves.engine.reference import ReferenceEngine
 from fiftymoves.llm.explain import (
     ExplanationCache,
+    PersonalContext,
     build_provider,
     cache_key,
     explain_position,
@@ -25,6 +26,7 @@ from fiftymoves.llm.facts import build_evidence, mover_cp
 from fiftymoves.llm.provider import (
     DeterministicProvider,
     Draft,
+    Persona,
     PositionBrief,
     ProviderError,
     effort_level,
@@ -73,6 +75,8 @@ class StubProvider:
         brief: PositionBrief,
         evidence: Sequence[Evidence],
         probe: EngineProbe | None = None,
+        persona: Persona = Persona.POSITION,
+        ask: str | None = None,
     ) -> Draft:
         self.calls += 1
         self.saw_probe = probe is not None
@@ -241,7 +245,6 @@ class TestCache:
         assert cache_key("d", "v1", stub) != cache_key("d", "v1", DeterministicProvider())
 
     def test_one_position_has_one_explanation(self) -> None:
-        # A paid call is about the position, so every player and colour shares it.
         provider = DeterministicProvider()
         assert cache_key("d", "v1", provider) == cache_key("d", "v1", provider)
 
@@ -294,6 +297,61 @@ class TestExplainPosition:
         provider = StubProvider(Draft(headline="h", claims=()))
         with pytest.raises(ValueError):
             explain_position(chess.Board(), provider=provider, digest="abc")
+
+
+def personal_context(games: int) -> PersonalContext:
+    return PersonalContext(
+        node=GraphNode(
+            digest="abc",
+            epd="8/8/8/8/8/8/8/8 w - -",
+            variant=Variant.STANDARD,
+            depth_ply=2,
+            games=games,
+            player_to_move=True,
+            san_path=("e4",),
+            pruned_children=0,
+            pruned_child_games=0,
+            family=None,
+            family_share=1.0,
+            score=0.5,
+        )
+    )
+
+
+class TestPersonalEvidence:
+    def test_a_shared_explanation_refuses_one_player_s_counts(self) -> None:
+        board = chess.Board(MATE_IN_ONE)
+        study = study_position(board, engine=ReferenceEngine(), depth=3, ablation_depth=2)
+        provider = StubProvider(Draft(headline="h", claims=()))
+        with pytest.raises(ValueError):
+            explain_position(
+                board,
+                provider=provider,
+                digest="abc",
+                study=study,
+                personal=personal_context(40),
+            )
+
+    def test_two_players_at_one_position_do_not_share_a_key(self) -> None:
+        provider = DeterministicProvider()
+        mine = cache_key("abc", "v1", provider, personal_context(40))
+        theirs = cache_key("abc", "v1", provider, personal_context(9))
+        assert mine != theirs
+        assert mine != cache_key("abc", "v1", provider)
+
+    def test_a_private_call_carries_the_player_s_own_record(self) -> None:
+        board = chess.Board(MATE_IN_ONE)
+        study = study_position(board, engine=ReferenceEngine(), depth=3, ablation_depth=2)
+        provider = StubProvider(Draft(headline="h", claims=(Claim(text="a", evidence_id="rep"),)))
+        explanation = explain_position(
+            board,
+            provider=provider,
+            digest="abc",
+            study=study,
+            personal=personal_context(40),
+            shared=False,
+        )
+        assert "40 times" in next(e.statement for e in explanation.evidence if e.id == "rep")
 
 
 class TestProviderSelection:

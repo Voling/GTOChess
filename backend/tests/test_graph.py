@@ -5,9 +5,10 @@ from typing import Any
 import chess
 
 from fiftymoves.domain.games import GameRecord, GameSource, Side
+from fiftymoves.domain.graph import GraphEdge
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import Variant
-from fiftymoves.ingest.graph import build_graph
+from fiftymoves.ingest.graph import build_graph, family_floors
 
 ROOT = position_key(chess.Board()).digest
 
@@ -195,3 +196,86 @@ class TestIntensity:
         assert graph.node_count == 1
         assert graph.edges == ()
         assert graph.max_games == 0
+
+
+def named(game_id: str, moves: str, name: str, ply: int, **overrides: Any) -> GameRecord:
+    return game(game_id, moves, opening_name=name, opening_ply=ply, **overrides)
+
+
+def family_at(graph: Any, path: tuple[str, ...]) -> str | None:
+    return next(n.family for n in graph.nodes if n.san_path == path)
+
+
+class TestOpeningLabels:
+    def sicilian_and_kings_pawn(self) -> list[GameRecord]:
+        games = [named(f"s{i}", "e4 c5 Nf3 d6", "Sicilian Defense", 2) for i in range(9)]
+        games += [named(f"k{i}", "e4 e5 Nf3 Nc6", "King's Pawn Game", 2) for i in range(4)]
+        return games
+
+    def test_the_empty_board_carries_no_opening(self) -> None:
+        graph = build_graph(self.sicilian_and_kings_pawn(), family_min_games=2)
+        root = next(n for n in graph.nodes if n.digest == graph.root)
+        assert root.family is None
+        assert root.family_share == 0.0
+
+    def test_a_first_move_is_not_named_after_the_reply_it_usually_meets(self) -> None:
+        graph = build_graph(self.sicilian_and_kings_pawn(), family_min_games=2)
+        assert family_at(graph, ("e4",)) is None
+
+    def test_the_family_lands_on_the_move_that_establishes_it(self) -> None:
+        graph = build_graph(self.sicilian_and_kings_pawn(), family_min_games=2)
+        assert family_at(graph, ("e4", "c5")) == "sicilian-defense"
+        assert family_at(graph, ("e4", "e5")) == "king-s-pawn-game"
+
+    def test_a_family_named_late_cannot_backdate_onto_earlier_moves(self) -> None:
+        games = [named(f"r{i}", "e4 e5 Nf3 Nc6 Bb5 a6", "Ruy Lopez", 5) for i in range(9)]
+        games += [named(f"i{i}", "e4 e5 Nf3 Nc6 Bc4 Bc5", "Italian Game", 5) for i in range(4)]
+        graph = build_graph(games, max_ply=6, family_min_games=2)
+        assert family_at(graph, ("e4", "e5")) is None
+        assert family_at(graph, ("e4", "e5", "Nf3", "Nc6")) is None
+        assert family_at(graph, ("e4", "e5", "Nf3", "Nc6", "Bb5")) == "ruy-lopez"
+
+    def test_an_opening_settled_on_the_first_move_is_named_there(self) -> None:
+        games = [named(f"b{i}", "b3 e5 Bb2", "Nimzo-Larsen Attack", 1) for i in range(6)]
+        graph = build_graph(games, family_min_games=2)
+        assert family_at(graph, ("b3",)) == "nimzo-larsen-attack"
+
+    def test_the_floor_is_the_earliest_ply_the_family_is_ever_named(self) -> None:
+        floors = family_floors(
+            [
+                named("a", "e4 c5", "Sicilian Defense: Najdorf", 8),
+                named("b", "e4 c5", "Sicilian Defense", 2),
+                named("c", "e4 e5 Nf3 Nc6 Bb5", "Ruy Lopez", 5),
+            ]
+        )
+        assert floors["sicilian-defense"] == 2
+        assert floors["ruy-lopez"] == 5
+
+    def test_a_game_with_no_opening_ply_does_not_set_a_floor(self) -> None:
+        assert family_floors([named("a", "e4", "Sicilian Defense", None)]) == {}
+
+
+class TestResults:
+    def test_an_edge_carries_the_result_of_every_game_through_it(self) -> None:
+        graph = build_graph(
+            [
+                game("a", "e4 e5", score=1.0),
+                game("b", "e4 e5", score=0.0),
+                game("c", "e4 e5", score=0.5),
+                game("d", "e4 e5", score=1.0),
+            ]
+        )
+        first = next(e for e in graph.edges if e.san == "e4")
+        assert (first.wins, first.draws, first.losses) == (2, 1, 1)
+        assert first.score == 0.625
+
+    def test_the_result_follows_the_player_not_white(self) -> None:
+        graph = build_graph([game("a", "e4 e5 Nf3", score=1.0, player_is_white=False)])
+        reply = next(e for e in graph.edges if e.san == "e5")
+        assert reply.by_player
+        assert (reply.wins, reply.draws, reply.losses) == (1, 0, 0)
+
+    def test_an_edge_with_no_games_scores_level_rather_than_zero(self) -> None:
+        blank = GraphEdge(parent="p", child="c", uci="e2e4", san="e4", games=0, by_player=True)
+        assert blank.decided == 0
+        assert blank.score == 0.5

@@ -18,6 +18,7 @@ _PLAN_DIGEST_BYTES = 12
 # Mate scores are folded into centipawns so ranking is total. Kept well clear of
 # any real evaluation so a mate never sorts below a material advantage.
 MATE_SCORE_CP: int = 100_000
+MAX_LOSS_CP: int = 1_000
 
 
 class Variant(StrEnum):
@@ -177,6 +178,14 @@ class SensitivityReport(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class PlayableMove(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    uci: str
+    san: str
+    score_cp: int = Field(description="From White's side, as the engine reports")
+
+
 class EvalLandscape(BaseModel):
     """Shape of the evaluation surface, not a category label.
 
@@ -188,6 +197,10 @@ class EvalLandscape(BaseModel):
     best_cp: int
     legal_move_count: int
     playable_move_count: int = Field(description="Moves within the 'not a mistake' band")
+    playable: tuple[PlayableMove, ...] = Field(
+        default=(),
+        description="The playable moves themselves, capped by how many lines the search returned",
+    )
     delta_to_second_cp: int | None
     top_move_entropy: float = Field(description="0 = one move stands alone, higher = many equals")
     eval_volatility_cp: float = Field(description="Stddev of best_cp across search depths")

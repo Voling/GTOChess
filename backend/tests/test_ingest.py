@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, cast
 
 import pytest
 
@@ -8,6 +9,7 @@ from fiftymoves.config import Settings
 from fiftymoves.domain.games import GameRecord, GameSource
 from fiftymoves.domain.models import MATE_SCORE_CP, Variant
 from fiftymoves.ingest.parse import UnusableGame, parse_lichess_game
+from fiftymoves.ingest.pipeline import export_windows
 from fiftymoves.ingest.repertoire import build_decision_nodes, build_opening_records
 
 ITALIAN = "e4 e5 Nf3 Nc6 Bc4 Bc5"
@@ -264,3 +266,55 @@ class TestSettingsWiring:
     def test_empty_perf_types_means_every_speed(self) -> None:
         assert Settings(ingest_perf_types=None).perf_type_list() == ()
         assert Settings(ingest_perf_types="").perf_type_list() == ()
+
+
+class _WindowedExport:
+    def __init__(self, games: list[dict[str, Any]], cap: int) -> None:
+        self.games = sorted(games, key=lambda g: -g["createdAt"])
+        self.cap = cap
+        self.calls: list[int | None] = []
+
+    def export_user_games(
+        self, username: str, *, until_ms: int | None = None, max_games: int | None = None, **_: Any
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append(until_ms)
+        pool = [g for g in self.games if until_ms is None or g["createdAt"] <= until_ms]
+        yield from pool[: min(self.cap, max_games or self.cap)]
+
+
+def stamped(index: int) -> dict[str, Any]:
+    return {"id": f"g{index}", "createdAt": 1_700_000_000_000 - index * 1000}
+
+
+class TestWindowedExport:
+    def test_it_pages_past_the_provider_cap(self) -> None:
+        source = _WindowedExport([stamped(i) for i in range(25)], cap=10)
+        got = list(export_windows(cast(Any, source), "u", limit=None, rated=None, perf_types=()))
+        assert len(got) == 25
+        assert [g["id"] for g in got] == [f"g{i}" for i in range(25)]
+
+    def test_the_overlapping_game_is_not_yielded_twice(self) -> None:
+        source = _WindowedExport([stamped(i) for i in range(25)], cap=10)
+        got = list(export_windows(cast(Any, source), "u", limit=None, rated=None, perf_types=()))
+        assert len(got) == len({g["id"] for g in got})
+        assert source.calls[0] is None
+        assert source.calls[1] == stamped(9)["createdAt"]
+
+    def test_a_limit_stops_the_walk_early(self) -> None:
+        source = _WindowedExport([stamped(i) for i in range(25)], cap=10)
+        got = list(export_windows(cast(Any, source), "u", limit=12, rated=None, perf_types=()))
+        assert len(got) == 12
+
+    def test_an_empty_history_asks_once(self) -> None:
+        source = _WindowedExport([], cap=10)
+        assert (
+            list(export_windows(cast(Any, source), "u", limit=None, rated=None, perf_types=()))
+            == []
+        )
+        assert len(source.calls) == 1
+
+    def test_a_window_of_only_repeats_ends_the_walk(self) -> None:
+        source = _WindowedExport([stamped(0)], cap=10)
+        got = list(export_windows(cast(Any, source), "u", limit=None, rated=None, perf_types=()))
+        assert len(got) == 1
+        assert len(source.calls) == 2

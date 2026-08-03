@@ -24,3 +24,10 @@ vendor/
 *.pgn
 *.pgn.zst
 data/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars

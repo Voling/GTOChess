@@ -3,8 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   completeAuth,
   disconnectAuth,
-  fetchCosts,
+  fetchMoveLosses,
   fetchAuthStatus,
+  fetchAnalysis,
+  buildAnalysis,
   fetchExplanation,
   requestExplanation,
   fetchGraph,
@@ -13,6 +15,7 @@ import {
   fetchOpeningPhase,
   startAuth,
   startImport,
+  type Analysis,
   type AuthStatus,
   type Explanation,
   type GraphQuery,
@@ -27,6 +30,7 @@ import { ancestry, pathTo, placeRadial, walk, type PlacedNode } from "./layout";
 import AccountPanel from "./components/AccountPanel.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
+import AnalysisPane from "./components/AnalysisPane.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
 import Segmented from "./components/Segmented.vue";
 import Stepper from "./components/Stepper.vue";
@@ -75,6 +79,10 @@ const annotationNote = ref<string | null>(null);
 const explanation = ref<Explanation | null>(null);
 const explaining = ref(false);
 const explanationError = ref<string | null>(null);
+const analysis = ref<Analysis | null>(null);
+const analysing = ref(false);
+const analysisError = ref<string | null>(null);
+const analysisOpen = ref(false);
 
 const placement = computed(() =>
   graph.value ? placeRadial(graph.value, RADIUS) : null,
@@ -250,12 +258,43 @@ async function requestAnalysis() {
   }
 }
 
+async function openAnalysis() {
+  const digest = pinned.value;
+  if (!digest) return;
+  analysisOpen.value = true;
+  analysisError.value = null;
+  if (analysis.value) return;
+  try {
+    const held = await fetchAnalysis(query.value, digest);
+    if (held.state === "ready" && held.analysis) analysis.value = held.analysis;
+  } catch {
+    // Nothing stored yet is the normal case, not an error worth showing.
+  }
+}
+
+// Spends a model call plus a run of engine searches, only on an explicit press.
+async function buildBoardAnalysis() {
+  const digest = pinned.value;
+  if (!digest || analysing.value) return;
+  analysing.value = true;
+  analysisError.value = null;
+  try {
+    analysis.value = await buildAnalysis(query.value, digest);
+  } catch (exc) {
+    analysisError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    analysing.value = false;
+  }
+}
+
 function scheduleExplain() {
   window.clearTimeout(explainTimer);
   explainRequest += 1;
   explanation.value = null;
   explanationError.value = null;
   explaining.value = false;
+  analysis.value = null;
+  analysisError.value = null;
 
   const digest = pinned.value;
   if (!digest) return;
@@ -363,10 +402,10 @@ let annotationPoll: number | undefined;
 async function loadAnnotations() {
   window.clearTimeout(annotationPoll);
   try {
-    const response = await fetchCosts(query.value);
+    const response = await fetchMoveLosses(query.value);
     annotations.value = new Map(response.marks.map((m) => [m.child, m]));
-    annotationNote.value = response.priced_moves
-      ? `${response.flagged} flagged of ${response.priced_moves} moves priced`
+    annotationNote.value = response.measured_moves
+      ? `${response.flagged} flagged of ${response.measured_moves} moves measured`
       : null;
   } catch {
     annotations.value = new Map();
@@ -635,6 +674,19 @@ onBeforeUnmount(() => {
         @back="back"
         @forward="forward"
         @reset="resetLine"
+        @board="openAnalysis"
+      />
+    </Transition>
+
+    <Transition name="rise">
+      <AnalysisPane
+        v-if="analysisOpen && pinned"
+        :analysis="analysis"
+        :busy="analysing"
+        :error="analysisError"
+        class="analysis-slot"
+        @build="buildBoardAnalysis"
+        @close="analysisOpen = false"
       />
     </Transition>
 
@@ -795,6 +847,18 @@ input:focus {
   position: absolute;
   left: 16px;
   bottom: 16px;
+}
+.analysis-slot {
+  position: absolute;
+  top: 16px;
+  left: 336px;
+  width: 348px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
 }
 .phase {
   display: grid;

@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     ingest_max_ply: int = 24
 
     user_agent: str = "FiftyMoves/0.1"
-    pipeline_version: str = "v1"
+    pipeline_version: str = "v2"
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     # A large import runs to hundreds of megabytes in memory, so this stays small.
     graph_cache_entries: int = 8
     walk_cache_entries: int = 4
+
+    # Every analysis is a model call charged to this account, so the endpoints
+    # that spend are closed by default and opened only to a verified account.
+    auth_required: bool = True
+    cognito_user_pool_id: str | None = None
+    cognito_client_id: str | None = None
+    cognito_region: str = "us-east-1"
+    analysis_daily_limit: int = 50
 
     job_result_ttl_s: int = 86400
     job_report_every: int = 250

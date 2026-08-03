@@ -7,6 +7,8 @@ const props = defineProps<{
   moves?: { uci: string; san: string; child: string }[];
   flipped?: boolean;
   lastUci?: string | null;
+  arrows?: { origin: string; target: string; role: string }[];
+  highlights?: string[];
 }>();
 
 const emit = defineEmits<{ play: [uci: string]; blocked: [square: string] }>();
@@ -125,6 +127,50 @@ function tap(cell: Cell) {
 const edge = computed(() => `${props.size ?? 168}px`);
 const glyphSize = computed(() => `${((props.size ?? 168) / 8) * 0.82}px`);
 const playable = computed(() => (props.moves?.length ?? 0) > 0);
+
+const marked = computed(() => new Set(props.highlights ?? []));
+
+const ARROW_COLOURS: Record<string, string> = {
+  played: "#d8a75a",
+  idea: "#6f9fd8",
+  threat: "#cc6b5a",
+};
+
+function centre(square: string): [number, number] | null {
+  const file = FILES.indexOf(square[0]);
+  const rank = Number(square[1]);
+  if (file < 0 || !Number.isFinite(rank)) return null;
+  let col = file;
+  let row = 8 - rank;
+  if (props.flipped) {
+    col = 7 - col;
+    row = 7 - row;
+  }
+  return [(col + 0.5) * 12.5, (row + 0.5) * 12.5];
+}
+
+const drawn = computed(() =>
+  (props.arrows ?? [])
+    .map((arrow) => {
+      const from = centre(arrow.origin);
+      const to = centre(arrow.target);
+      if (!from || !to) return null;
+      const [x1, y1] = from;
+      const [x2, y2] = to;
+      const length = Math.hypot(x2 - x1, y2 - y1) || 1;
+      // Stop short of the centre so the arrowhead sits on the square's edge.
+      const trim = 4.2;
+      return {
+        key: `${arrow.origin}${arrow.target}${arrow.role}`,
+        x1,
+        y1,
+        x2: x2 - ((x2 - x1) / length) * trim,
+        y2: y2 - ((y2 - y1) / length) * trim,
+        colour: ARROW_COLOURS[arrow.role] ?? ARROW_COLOURS.idea,
+      };
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null),
+);
 </script>
 
 <template>
@@ -142,6 +188,7 @@ const playable = computed(() => (props.moves?.length ?? 0) > 0);
         pick: cell.square === selected,
         target: targets.has(cell.square),
         last: lastSquares.has(cell.square),
+        marked: marked.has(cell.square),
         live: playable && occupantIsMover(cell) && fromSquares.has(cell.square),
       }"
       :aria-label="cell.square"
@@ -161,11 +208,47 @@ const playable = computed(() => (props.moves?.length ?? 0) > 0);
         :class="{ over: cell.glyph !== null }"
       />
     </button>
+    <svg v-if="drawn.length" class="overlay" viewBox="0 0 100 100">
+      <defs>
+        <marker
+          v-for="arrow in drawn"
+          :id="`head-${arrow.key}`"
+          :key="`m-${arrow.key}`"
+          markerWidth="3.4"
+          markerHeight="3.4"
+          refX="2.6"
+          refY="1.7"
+          orient="auto"
+        >
+          <path d="M0,0 L3.4,1.7 L0,3.4 z" :fill="arrow.colour" />
+        </marker>
+      </defs>
+      <line
+        v-for="arrow in drawn"
+        :key="arrow.key"
+        :x1="arrow.x1"
+        :y1="arrow.y1"
+        :x2="arrow.x2"
+        :y2="arrow.y2"
+        :stroke="arrow.colour"
+        stroke-width="1.6"
+        stroke-linecap="round"
+        :marker-end="`url(#head-${arrow.key})`"
+      />
+    </svg>
   </div>
 </template>
 
 <style scoped>
+.overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
 .board {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   grid-template-rows: repeat(8, 1fr);
@@ -198,6 +281,12 @@ const playable = computed(() => (props.moves?.length ?? 0) > 0);
   position: absolute;
   inset: 0;
   background: rgba(216, 167, 90, 0.22);
+}
+.square.marked::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 2px rgba(216, 167, 90, 0.75);
 }
 .square.pick::after {
   content: "";

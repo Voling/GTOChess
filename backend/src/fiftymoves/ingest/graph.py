@@ -11,6 +11,8 @@ from fiftymoves.domain.graph import GraphEdge, GraphNode, OpeningName, Repertoir
 from fiftymoves.domain.identity import position_key
 from fiftymoves.domain.models import PositionKey, Variant
 
+FAMILY_MIN_SHARE = 0.5
+
 
 class _Node:
     def __init__(self, key: PositionKey, depth_ply: int, san_path: tuple[str, ...]) -> None:
@@ -20,17 +22,27 @@ class _Node:
         self.games: set[str] = set()
         self.families: Counter[str] = Counter()
         self.openings: Counter[tuple[str, str]] = Counter()
+        self.named = 0
         self.scores: list[float] = []
         self.as_white = 0
         self.ratings: list[int] = []
 
-    def observe(self, game: GameRecord, family: str) -> None:
+    def observe(self, game: GameRecord, family: str, floor: int) -> None:
+        """A position can only carry an opening the games have actually reached.
+
+        ``floor`` is the earliest ply at which this family is ever named, so a
+        line that transposes into it later cannot backdate the label onto moves
+        played before it existed. Without this the root inherits whichever
+        defence the player faces most and the empty board reads as the Sicilian.
+        """
         if game.game_id in self.games:
             return
         self.games.add(game.game_id)
-        self.families[family] += 1
-        if game.opening_name:
+        if self.depth_ply >= floor:
+            self.families[family] += 1
+        if game.opening_name and self.depth_ply >= (game.opening_ply or 0):
             self.openings[(game.eco or "", game.opening_name)] += 1
+            self.named += 1
         self.scores.append(game.score)
         if game.opponent_rating:
             self.ratings.append(game.opponent_rating)
@@ -44,11 +56,11 @@ class _Node:
         sub-variations, the shared prefix is still true of all of them, which is
         more useful than naming whichever one happens to be commonest.
         """
-        if not self.openings or not self.games:
+        if not self.openings or not self.named:
             return None
 
         (eco, name), count = max(self.openings.items(), key=lambda item: (item[1], item[0]))
-        if count / len(self.games) >= min_share:
+        if count / self.named >= min_share:
             return eco, name
 
         agreed = shared_name([label for _, label in self.openings])
@@ -79,6 +91,20 @@ class _Edge:
         self.san = san
         self.by_player = by_player
         self.games: set[str] = set()
+        self.wins = 0
+        self.draws = 0
+        self.losses = 0
+
+    def observe(self, game: GameRecord) -> None:
+        if game.game_id in self.games:
+            return
+        self.games.add(game.game_id)
+        if game.score > 0.5:
+            self.wins += 1
+        elif game.score < 0.5:
+            self.losses += 1
+        else:
+            self.draws += 1
 
 
 class GameWalk:
@@ -101,6 +127,18 @@ class GameWalk:
         self.games = games
 
 
+def family_floors(games: Sequence[GameRecord]) -> dict[str, int]:
+    floors: dict[str, int] = {}
+    for game in games:
+        if game.opening_ply is None:
+            continue
+        key = family_key(game.opening_name)
+        held = floors.get(key)
+        if held is None or game.opening_ply < held:
+            floors[key] = game.opening_ply
+    return floors
+
+
 def walk_games(
     games: Sequence[GameRecord], *, side: Side = Side.BOTH, max_ply: int = 12
 ) -> GameWalk:
@@ -109,6 +147,7 @@ def walk_games(
         for g in games
         if g.variant is Variant.STANDARD and not g.initial_fen and side.covers(g.player_is_white)
     ]
+    floors = family_floors(standard)
     root_key = position_key(chess.Board())
 
     nodes: dict[str, _Node] = {
@@ -125,7 +164,8 @@ def walk_games(
         path: tuple[str, ...] = ()
         parent_digest = root_key.digest
         family = family_key(game.opening_name)
-        nodes[parent_digest].observe(game, family)
+        floor = floors.get(family, 0)
+        nodes[parent_digest].observe(game, family, floor)
 
         for ply, san in enumerate(game.moves_san):
             if ply >= max_ply:
@@ -149,7 +189,7 @@ def walk_games(
                     child = _Node(child_key, ply + 1, path)
                     nodes[child_key.digest] = child
                 lands_on[link] = child
-            child.observe(game, family)
+            child.observe(game, family, floor)
             child_digest = child.key.digest
 
             edge_id = (parent_digest, child_digest)
@@ -157,7 +197,7 @@ def walk_games(
             if edge is None:
                 edge = _Edge(parent_digest, child_digest, uci, san, by_player)
                 edges[edge_id] = edge
-            edge.games.add(game.game_id)
+            edge.observe(game)
 
             parent_digest = child_digest
 
@@ -252,6 +292,8 @@ def prune_walk(
     def _node(digest: str, node: _Node) -> GraphNode:
         counts = {k: v for k, v in node.families.items() if k in ranked}
         family, share = dominant(counts)
+        if share < FAMILY_MIN_SHARE:
+            family, share = None, 0.0
         return GraphNode(
             opening=intern(node),
             digest=node.key.digest,
@@ -279,6 +321,9 @@ def prune_walk(
             san=edge.san,
             games=len(edge.games),
             by_player=edge.by_player,
+            wins=edge.wins,
+            draws=edge.draws,
+            losses=edge.losses,
         )
         for edge in kept
     )

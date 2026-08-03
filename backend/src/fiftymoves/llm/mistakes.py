@@ -3,7 +3,7 @@ from __future__ import annotations
 import chess
 
 from fiftymoves.analysis.fingerprint import fingerprint_from_pv
-from fiftymoves.domain.book import MoveCost
+from fiftymoves.domain.book import PositionLosses
 from fiftymoves.domain.explanations import Evidence, EvidenceKind
 from fiftymoves.domain.models import PlanStep
 from fiftymoves.engine.protocol import EngineProvider
@@ -32,11 +32,11 @@ PIECE_WORDS = {
 
 
 class Mistake:
-    def __init__(self, board: chess.Board, played_uci: str, cost: MoveCost) -> None:
+    def __init__(self, board: chess.Board, played_uci: str, cost: PositionLosses) -> None:
         self.board = board
         self.played = chess.Move.from_uci(played_uci)
         self.cost = cost
-        self.loss_cp = cost.loss(played_uci) or 0
+        self.loss_cp = cost.for_move(played_uci) or 0
         self.played_san = cost.sans.get(played_uci) or board.san(self.played)
         self.best = chess.Move.from_uci(cost.best_uci)
         self.best_san = cost.best_san
@@ -51,7 +51,6 @@ def _step_phrase(step: PlanStep) -> str:
 
 
 def _divergence(punish: list[PlanStep], intent: list[PlanStep]) -> str | None:
-    """Where the two plans part is the idea that was missed."""
     for left, right in zip(punish, intent, strict=False):
         if left.token() == right.token():
             continue
@@ -71,15 +70,8 @@ def build_mistake_evidence(
     depth: int | None = None,
     pv_moves: int = 6,
 ) -> list[Evidence]:
-    """The two lines that explain a mistake, plus what separates their plans.
-
-    The punishment is how the move is refuted and the intent is what the position
-    wanted, so the explanation is the contrast rather than a swapped move.
-    """
     board = mistake.board
     best_cp = mover_cp(mistake.cost.best_cp, board)
-    # Both lines run at the depth the move was priced at. A shallower probe would
-    # quote a different number for the same position and read as a contradiction.
     depth = depth or mistake.cost.depth
 
     evidence = [

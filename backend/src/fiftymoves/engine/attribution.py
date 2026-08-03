@@ -22,12 +22,6 @@ def _cells(line: str) -> list[str]:
 
 
 def parse_eval(output: str) -> PositionAttribution:
-    """Read Stockfish's own account of where the evaluation comes from.
-
-    ``eval`` prints a board of per piece values and a material against
-    positional split. It costs one call and no search, unlike ablation, which
-    re-searches once per piece.
-    """
     lines = output.splitlines()
     symbols: list[list[str]] = []
     values: list[list[str]] = []
@@ -42,7 +36,6 @@ def parse_eval(output: str) -> PositionAttribution:
             values.append(cells)
 
     pieces: list[PieceValue] = []
-    # The board prints rank 8 first, and each rank is a symbol row then a value row.
     for index, (row_symbols, row_values) in enumerate(zip(symbols, values, strict=False)):
         rank = 7 - index
         for file, (symbol, value) in enumerate(zip(row_symbols, row_values, strict=False)):

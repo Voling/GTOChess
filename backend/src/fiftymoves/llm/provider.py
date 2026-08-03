@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from fiftymoves.domain.explanations import Claim, Evidence
 from fiftymoves.llm.prompts import prompt
-from fiftymoves.llm.tools import TOOLS, EngineProbe, ProbeLimit
+from fiftymoves.llm.tools import ProbeLimit
 
 MAX_TURNS = 8
 
@@ -23,13 +23,25 @@ MAX_TURNS = 8
 class Persona(StrEnum):
     POSITION = "position"
     MISTAKE = "mistake"
+    ANALYST = "analyst"
+
+
+class Toolbox(Protocol):
+    @property
+    def evidence(self) -> list[Evidence]: ...
+
+    @property
+    def schema(self) -> list[dict[str, Any]]: ...
+
+    def dispatch(self, name: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
 def system_prompt(persona: Persona, *, probing: bool) -> str:
     text = prompt(persona.value)
     if not probing:
         return text
-    return "\n\n".join((text, prompt("probe")))
+    manual = "board" if persona is Persona.ANALYST else "probe"
+    return "\n\n".join((text, prompt(manual)))
 
 
 SCHEMA: dict[str, Any] = {
@@ -91,7 +103,7 @@ class ExplanationProvider(Protocol):
         self,
         brief: PositionBrief,
         evidence: Sequence[Evidence],
-        probe: EngineProbe | None = None,
+        probe: Toolbox | None = None,
         persona: Persona = Persona.POSITION,
         ask: str | None = None,
     ) -> Draft: ...
@@ -123,7 +135,7 @@ class DeterministicProvider:
         self,
         brief: PositionBrief,
         evidence: Sequence[Evidence],
-        probe: EngineProbe | None = None,
+        probe: Toolbox | None = None,
         persona: Persona = Persona.POSITION,
         ask: str | None = None,
     ) -> Draft:
@@ -160,7 +172,7 @@ class AnthropicProvider:
         self,
         brief: PositionBrief,
         evidence: Sequence[Evidence],
-        probe: EngineProbe | None = None,
+        probe: Toolbox | None = None,
         persona: Persona = Persona.POSITION,
         ask: str | None = None,
     ) -> Draft:
@@ -178,7 +190,7 @@ class AnthropicProvider:
         messages: list[BetaMessageParam] = [
             {"role": "user", "content": render_request(brief, evidence, ask)}
         ]
-        extra: dict[str, Any] = {"tools": TOOLS} if probe else {}
+        extra: dict[str, Any] = {"tools": probe.schema} if probe else {}
 
         for _ in range(MAX_TURNS):
             try:

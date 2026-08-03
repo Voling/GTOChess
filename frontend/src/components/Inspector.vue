@@ -28,6 +28,7 @@ const emit = defineEmits<{
   go: [digest: string];
   close: [];
   analyse: [];
+  board: [];
   play: [uci: string];
   blocked: [square: string];
   back: [];
@@ -166,13 +167,17 @@ const share = (edge: PlacedEdge) =>
       back.
     </p>
 
-    <ExplanationPanel
-      v-else-if="pinned"
-      :explanation="explanation"
-      :loading="explaining"
-      :error="explanationError"
-      @analyse="emit('analyse')"
-    />
+    <template v-else-if="pinned">
+      <ExplanationPanel
+        :explanation="explanation"
+        :loading="explaining"
+        :error="explanationError"
+        @analyse="emit('analyse')"
+      />
+      <button type="button" class="board-call" @click="emit('board')">
+        Walk this position on the board
+      </button>
+    </template>
   </aside>
 </template>
 
@@ -373,5 +378,20 @@ li button:hover {
   font-size: 11px;
   line-height: 1.5;
   color: var(--faint);
+}
+.board-call {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  cursor: pointer;
+}
+.board-call:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
 }
 </style>

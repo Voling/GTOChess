@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -49,6 +50,56 @@ class IngestResult(BaseModel):
 
 ProgressHook = Callable[[IngestProgress], None]
 
+WINDOW_GAMES = 10_000
+
+
+def export_windows(
+    client: LichessClient,
+    username: str,
+    *,
+    limit: int | None,
+    rated: bool | None,
+    perf_types: Sequence[str],
+    window: int = WINDOW_GAMES,
+) -> Iterator[dict[str, Any]]:
+    """Walk the whole history in date windows.
+
+    A single lichess export stops near ten thousand games however high ``max``
+    is set, so asking once silently returns only the most recent slice. Each
+    window restarts from the oldest game the last one yielded. Ids are tracked
+    because ``until`` is inclusive, so consecutive windows overlap by a game.
+    """
+    seen: set[str] = set()
+    until: int | None = None
+    remaining = limit
+
+    while remaining is None or remaining > 0:
+        want = window if remaining is None else min(window, remaining + 1)
+        oldest: int | None = None
+        fresh = 0
+
+        for raw in client.export_user_games(
+            username, until_ms=until, max_games=want, rated=rated, perf_types=perf_types
+        ):
+            created = raw.get("createdAt")
+            if isinstance(created, int) and (oldest is None or created < oldest):
+                oldest = created
+            game_id = raw.get("id")
+            if isinstance(game_id, str):
+                if game_id in seen:
+                    continue
+                seen.add(game_id)
+            fresh += 1
+            yield raw
+            if remaining is not None:
+                remaining -= 1
+                if remaining <= 0:
+                    return
+
+        if not fresh or oldest is None:
+            return
+        until = oldest
+
 
 def ingest_player(
     username: str,
@@ -78,9 +129,10 @@ def ingest_player(
         # Written as games arrive so a long export survives an interruption.
         handle = stack.enter_context(games_path.open("w", encoding="utf-8")) if games_path else None
 
-        stream = client.export_user_games(
+        stream = export_windows(
+            client,
             username,
-            max_games=limit,
+            limit=limit,
             rated=settings.ingest_rated_only or None,
             perf_types=settings.perf_type_list(),
         )

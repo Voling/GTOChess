@@ -3,13 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class MoveCost(BaseModel):
-    """What every reply from one position gives up, priced by a single search.
-
-    Intrinsic to the position, so it is stored once and read by every player who
-    reaches it. Who played what is joined in later from their own graph.
-    """
-
+class PositionLosses(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     digest: str
@@ -23,7 +17,7 @@ class MoveCost(BaseModel):
     )
     sans: dict[str, str] = Field(default_factory=dict)
 
-    def loss(self, uci: str) -> int | None:
+    def for_move(self, uci: str) -> int | None:
         return self.losses.get(uci)
 
 
@@ -56,12 +50,6 @@ class FamilyBook(BaseModel):
 
 
 class OpeningPhase(BaseModel):
-    """How far the player's opening holds up, and how cleanly.
-
-    Depth is the headline because it is the interpretable number: a book that
-    runs to move 9 is a fact about a player. The share supports it.
-    """
-
     families: tuple[FamilyBook, ...] = ()
     book_depth: float
     clean_share: float

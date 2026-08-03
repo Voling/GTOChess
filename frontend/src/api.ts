@@ -121,8 +121,8 @@ export interface MoveAnnotation {
   depth: number;
 }
 
-export interface CostResponse {
-  priced_moves: number;
+export interface LossResponse {
+  measured_moves: number;
   flagged: number;
   marks: MoveAnnotation[];
 }
@@ -177,6 +177,66 @@ export interface Explanation {
   model: string | null;
   dropped_claims: number;
   fallback_reason: string | null;
+}
+
+export interface Arrow {
+  origin: string;
+  target: string;
+  role: "played" | "idea" | "threat";
+}
+
+export interface Beat {
+  index: number;
+  epd: string;
+  move_uci: string | null;
+  move_san: string | null;
+  glyph: string;
+  arrows: Arrow[];
+  highlights: string[];
+  note: string;
+  score_cp: number | null;
+  evidence_id: string | null;
+}
+
+export interface Scene {
+  title: string;
+  beats: Beat[];
+}
+
+export interface Storyboard {
+  root_epd: string;
+  orientation: "white" | "black";
+  scenes: Scene[];
+}
+
+export interface Analysis {
+  explanation: Explanation;
+  storyboard: Storyboard;
+}
+
+export interface StoredAnalysis {
+  state: "ready" | "missing";
+  analysis?: Analysis;
+  model?: string | null;
+}
+
+export function fetchAnalysis(
+  query: GraphQuery,
+  digest: string,
+): Promise<StoredAnalysis> {
+  const user = encodeURIComponent(query.username);
+  return get<StoredAnalysis>(
+    `/api/players/${user}/positions/${digest}/analysis`,
+  );
+}
+
+export function buildAnalysis(
+  query: GraphQuery,
+  digest: string,
+): Promise<Analysis> {
+  const user = encodeURIComponent(query.username);
+  const path = `/api/players/${user}/positions/${digest}/analysis`;
+  return post<Analysis>(`${path}?${shapeParams(query)}`);
 }
 
 export interface GraphEdge {
@@ -258,9 +318,9 @@ export function fetchGraph(query: GraphQuery): Promise<RepertoireGraph> {
   );
 }
 
-export function fetchCosts(query: GraphQuery): Promise<CostResponse> {
+export function fetchMoveLosses(query: GraphQuery): Promise<LossResponse> {
   const user = encodeURIComponent(query.username);
-  return get<CostResponse>(`/api/players/${user}/costs?${shapeParams(query)}`);
+  return get<LossResponse>(`/api/players/${user}/move-losses?${shapeParams(query)}`);
 }
 
 export function fetchOpeningPhase(query: GraphQuery): Promise<OpeningPhase> {

@@ -13,6 +13,7 @@ from fiftymoves.jobs.notify import deliver
 IMPORT_TASK = "fiftymoves.import_player"
 ANNOTATE_TASK = "fiftymoves.annotate_player"
 LEARN_TASK = "fiftymoves.learn_positions"
+MEASURE_TASK = "fiftymoves.measure_losses"
 
 
 def announce(event: str, body: dict[str, Any]) -> None:
@@ -139,6 +140,63 @@ def learn_positions(
         "job_id": self.request.id,
     }
     announce("knowledge.finished", body)
+    return body
+
+
+@app.task(bind=True, name=MEASURE_TASK, max_retries=0)
+def measure_player_losses(
+    self: Task,
+    username: str,
+    side: str = "white",
+    max_ply: int = 28,
+    max_depth: int = 28,
+    workers: int = 0,
+    threads: int = 1,
+) -> dict[str, Any]:
+    # The pool forks, so this queue has to run on a worker that allows children:
+    # celery -Q measure --pool=solo. A prefork worker is daemonic and cannot.
+    from fiftymoves.analysis.book import BOOK_MAX_CHILDREN, MIN_VOLUME
+    from fiftymoves.analysis.sweep import SweepProgress, plan_sweep, run_sweep
+    from fiftymoves.config import EngineNotProvisioned
+    from fiftymoves.domain.games import Side
+    from fiftymoves.ingest.graph import build_graph
+    from fiftymoves.ingest.loss_store import LossStore
+    from fiftymoves.ingest.pipeline import load_player_games
+
+    settings = get_settings()
+    try:
+        engine_path = settings.resolve_engine_path()
+    except EngineNotProvisioned as exc:
+        return {"username": username, "failed": str(exc).splitlines()[0]}
+
+    games, _ = load_player_games(username, settings.data_dir)
+    if not games:
+        return {"username": username, "failed": f"no games imported for {username!r} yet"}
+
+    graph = build_graph(
+        games,
+        side=Side(side),
+        max_ply=max_ply,
+        min_volume=MIN_VOLUME,
+        max_children=BOOK_MAX_CHILDREN,
+    )
+    store = LossStore(settings.data_dir)
+    items = plan_sweep(graph, store, max_depth=max_depth)
+
+    def publish(progress: SweepProgress) -> None:
+        self.update_state(state="PROGRESS", meta={"username": username, **progress.model_dump()})
+
+    result = run_sweep(
+        items,
+        store,
+        engine_path=str(engine_path),
+        workers=workers,
+        threads=threads,
+        hash_mb=settings.engine_hash_mb,
+        on_progress=publish,
+    )
+    body = {"username": username, **result.model_dump()}
+    announce("measure.finished", {**body, "job_id": self.request.id})
     return body
 
 

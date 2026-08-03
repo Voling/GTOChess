@@ -3,37 +3,31 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from fiftymoves.domain.book import MoveCost
+from fiftymoves.domain.book import PositionLosses
 
 FILENAME = "move_costs.jsonl"
 
 
-class MoveCostStore:
-    """Priced positions on disk, keyed by position rather than by graph shape.
-
-    Keying by shape would mean a slider nudge discards hours of engine time, and
-    the cost of a move does not depend on how the graph was pruned.
-    """
-
+class LossStore:
     def __init__(self, directory: Path) -> None:
         self._path = directory / FILENAME
-        self._entries: dict[str, MoveCost] | None = None
+        self._entries: dict[str, PositionLosses] | None = None
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def _load(self) -> dict[str, MoveCost]:
+    def _load(self) -> dict[str, PositionLosses]:
         if self._entries is not None:
             return self._entries
-        entries: dict[str, MoveCost] = {}
+        entries: dict[str, PositionLosses] = {}
         if self._path.exists():
             with self._path.open(encoding="utf-8") as handle:
                 for line in handle:
                     if not line.strip():
                         continue
                     try:
-                        record = MoveCost.model_validate_json(line)
+                        record = PositionLosses.model_validate_json(line)
                     except ValueError:
                         continue
                     kept = entries.get(record.digest)
@@ -42,7 +36,7 @@ class MoveCostStore:
         self._entries = entries
         return entries
 
-    def get(self, digest: str) -> MoveCost | None:
+    def get(self, digest: str) -> PositionLosses | None:
         return self._load().get(digest)
 
     def missing(self, digests: Iterable[str], *, depth: int = 0) -> list[str]:
@@ -54,7 +48,7 @@ class MoveCostStore:
                 out.append(digest)
         return out
 
-    def extend(self, records: Iterable[MoveCost]) -> int:
+    def extend(self, records: Iterable[PositionLosses]) -> int:
         entries = self._load()
         fresh = [
             r for r in records if (held := entries.get(r.digest)) is None or r.depth > held.depth

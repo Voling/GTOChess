@@ -14,7 +14,7 @@ import statistics
 
 import chess
 
-from fiftymoves.domain.models import EngineReport, EvalLandscape
+from fiftymoves.domain.models import EngineReport, EvalLandscape, PlayableMove
 
 
 def _softmax_entropy(scores: list[int], *, temperature_cp: float = 50.0) -> float:
@@ -47,7 +47,11 @@ def compute_landscape(
     mover_scores = [line.score_cp if mover_is_white else -line.score_cp for line in report.lines]
     best_mover_cp = max(mover_scores) if mover_scores else 0
 
-    playable = sum(1 for s in mover_scores if best_mover_cp - s <= playable_band_cp)
+    playable = [
+        PlayableMove(uci=line.move_uci, san=line.move_san, score_cp=line.score_cp)
+        for line, score in zip(report.lines, mover_scores, strict=True)
+        if best_mover_cp - score <= playable_band_cp
+    ]
 
     volatility = 0.0
     mind_changes = 0
@@ -60,7 +64,8 @@ def compute_landscape(
     return EvalLandscape(
         best_cp=report.score_cp,
         legal_move_count=board.legal_moves.count(),
-        playable_move_count=playable,
+        playable_move_count=len(playable),
+        playable=tuple(playable),
         delta_to_second_cp=report.delta_to_second(),
         top_move_entropy=_softmax_entropy(mover_scores),
         eval_volatility_cp=volatility,

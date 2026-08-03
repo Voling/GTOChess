@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.book import price_position, score_openings
-from fiftymoves.domain.book import MoveCost
+from fiftymoves.analysis.book import book_depth, measure_losses, score_openings
+from fiftymoves.domain.book import MoveAccuracy, PositionLosses
 from fiftymoves.domain.games import Side
 from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
 from fiftymoves.domain.models import Variant
@@ -31,8 +31,8 @@ def edge(parent: str, child: str, uci: str, games: int) -> GraphEdge:
     return GraphEdge(parent=parent, child=child, uci=uci, san=uci, games=games, by_player=True)
 
 
-def cost(digest: str, losses: dict[str, int]) -> MoveCost:
-    return MoveCost(
+def cost(digest: str, losses: dict[str, int]) -> PositionLosses:
+    return PositionLosses(
         digest=digest,
         epd="8/8/8/8/8/8/8/8 w - -",
         depth=20,
@@ -57,7 +57,7 @@ def graph_of(nodes: list[GraphNode], edges: list[GraphEdge]) -> RepertoireGraph:
 
 
 class TestBookDepth:
-    def test_depth_stops_at_the_first_move_that_breaks_the_band(self) -> None:
+    def test_a_run_of_moves_over_the_band_ends_the_book(self) -> None:
         nodes = [node(f"n{m}", (m - 1) * 2, "Kings Pawn", 50) for m in (1, 2, 3, 4)]
         edges = [edge(f"n{m}", f"n{m + 1}", "a1a2", 50) for m in (1, 2, 3)]
         edges.append(edge("n4", "n5", "a1a2", 50))
@@ -65,13 +65,26 @@ class TestBookDepth:
             "n1": cost("n1", {"a1a2": 0}),
             "n2": cost("n2", {"a1a2": 10}),
             "n3": cost("n3", {"a1a2": 140}),
-            "n4": cost("n4", {"a1a2": 0}),
+            "n4": cost("n4", {"a1a2": 140}),
         }
         phase = score_openings(graph_of(nodes, edges), costs, prior_games=0)
         assert phase.families[0].raw_depth == 2
 
-    def test_a_gap_in_move_numbers_ends_the_book(self) -> None:
-        nodes = [node("n1", 0, "Kings Pawn", 50), node("n3", 4, "Kings Pawn", 50)]
+    def test_a_single_bad_move_does_not_wipe_out_the_moves_after_it(self) -> None:
+        nodes = [node(f"n{m}", (m - 1) * 2, "Kings Pawn", 50) for m in (1, 2, 3, 4)]
+        edges = [edge(f"n{m}", f"n{m + 1}", "a1a2", 50) for m in (1, 2, 3)]
+        edges.append(edge("n4", "n5", "a1a2", 50))
+        costs = {
+            "n1": cost("n1", {"a1a2": 140}),
+            "n2": cost("n2", {"a1a2": 10}),
+            "n3": cost("n3", {"a1a2": 0}),
+            "n4": cost("n4", {"a1a2": 0}),
+        }
+        phase = score_openings(graph_of(nodes, edges), costs, prior_games=0)
+        assert phase.families[0].raw_depth == 4
+
+    def test_a_wide_gap_in_move_numbers_ends_the_book(self) -> None:
+        nodes = [node("n1", 0, "Kings Pawn", 50), node("n3", 12, "Kings Pawn", 50)]
         edges = [edge("n1", "n2", "a1a2", 50), edge("n3", "n4", "a1a2", 50)]
         costs = {"n1": cost("n1", {"a1a2": 0}), "n3": cost("n3", {"a1a2": 0})}
         phase = score_openings(graph_of(nodes, edges), costs, prior_games=0)
@@ -119,7 +132,7 @@ class TestRepetition:
         # Counting games would put the flaw at 1% of the weight and hide it.
         assert phase.families[0].by_move[0].mean_loss_cp > 20
 
-    def test_a_position_the_engine_never_priced_is_skipped_not_guessed(self) -> None:
+    def test_a_position_the_engine_never_measured_is_skipped_not_guessed(self) -> None:
         nodes = [node("n1", 0, "Kings Pawn", 50), node("n2", 2, "Kings Pawn", 50)]
         edges = [edge("n1", "n2", "a1a2", 50), edge("n2", "n3", "a1a2", 50)]
         phase = score_openings(graph_of(nodes, edges), {"n1": cost("n1", {"a1a2": 0})})
@@ -130,7 +143,38 @@ class TestPricing:
     def test_one_search_prices_every_reply(self) -> None:
         board = chess.Board()
         replies = ["e2e4", "d2d4", "g1f3"]
-        priced = price_position(ReferenceEngine(), board, replies, digest="d", depth=4)
-        assert all(uci in priced.losses for uci in replies)
-        assert priced.losses[priced.best_uci] == 0
-        assert all(loss >= 0 for loss in priced.losses.values())
+        measured = measure_losses(ReferenceEngine(), board, replies, digest="d", depth=4)
+        assert all(uci in measured.losses for uci in replies)
+        assert measured.losses[measured.best_uci] == 0
+        assert all(loss >= 0 for loss in measured.losses.values())
+
+
+def accuracy(full_move: int, pawns: float) -> MoveAccuracy:
+    return MoveAccuracy(
+        full_move=full_move, positions=1, played=10, mean_loss_cp=pawns * 100, clean_share=1.0
+    )
+
+
+class TestBookDepthRule:
+    def test_an_unbroken_run_reaches_the_last_move(self) -> None:
+        assert book_depth([accuracy(m, 0.2) for m in range(1, 8)]) == 7
+
+    def test_one_move_over_the_band_does_not_end_the_book(self) -> None:
+        rows = [accuracy(2, 0.56), *[accuracy(m, 0.2) for m in range(3, 14)]]
+        assert book_depth(rows) == 13
+
+    def test_two_lapses_in_a_row_end_it(self) -> None:
+        rows = [accuracy(1, 0.1), accuracy(2, 0.2), accuracy(3, 0.9), accuracy(4, 0.9)]
+        assert book_depth(rows) == 2
+
+    def test_a_full_move_the_sweep_never_priced_is_skipped(self) -> None:
+        assert book_depth([accuracy(1, 0.2), accuracy(2, 0.2), accuracy(4, 0.2)]) == 4
+
+    def test_a_wide_gap_stops_the_walk_rather_than_claiming_the_tail(self) -> None:
+        assert book_depth([accuracy(1, 0.2), accuracy(2, 0.2), accuracy(9, 0.2)]) == 2
+
+    def test_nothing_measured_is_zero(self) -> None:
+        assert book_depth([]) == 0
+
+    def test_a_book_that_never_holds_the_band_is_zero(self) -> None:
+        assert book_depth([accuracy(1, 0.9), accuracy(2, 0.9)]) == 0

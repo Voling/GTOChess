@@ -56,7 +56,9 @@ const EMPTY_TRAIL: Trail = {
   edges: new Set(),
 };
 const INNER_RING = 0.24;
-const VOLUME_WEIGHT = 0.72;
+
+// Arc every node is guaranteed on its own ring, before anything is shared out.
+const MIN_ARC = 15;
 
 function edgeKey(edge: GraphEdge): string {
   return `${edge.parent}>${edge.child}`;
@@ -146,12 +148,34 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
   const spread = Math.max(maxDepth(root) - 1, 1);
   const ringRadius = new Map<number, number>();
 
-  base.ringGap = (radius * (1 - INNER_RING)) / spread;
+  const unitRing = (depth: number) =>
+    depth === 0 ? 0 : INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread);
 
-  const ringAt = (depth: number) =>
-    depth === 0
-      ? 0
-      : radius * (INNER_RING + (1 - INNER_RING) * ((depth - 1) / spread));
+  // Angular demand, bottom up. A node needs whichever is larger, the arc it wants
+  // for itself on its own ring or the room its whole subtree needs. Measured at
+  // unit radius, so the real angle is this over the radius actually drawn, and a
+  // radius that fits the lot falls straight out of the total.
+  const demand = new Map<TreeDatum, number>();
+  const measure = (datum: TreeDatum, depth: number): number => {
+    const below = datum.children.reduce(
+      (sum, kid) => sum + measure(kid, depth + 1),
+      0,
+    );
+    const own = depth === 0 ? 0 : MIN_ARC / unitRing(depth);
+    const total = Math.max(own, below);
+    demand.set(datum, total);
+    return total;
+  };
+  const wanted = measure(root, 0);
+
+  // Shallow leaves are the expensive ones: a branch that stops early holds a
+  // wedge priced at its own small radius, and that wedge stays just as wide out
+  // at the rim. Widening the drawing beats compressing everyone below the floor.
+  const drawn = Math.max(radius, wanted / (2 * Math.PI));
+  base.radius = drawn;
+  base.ringGap = (drawn * (1 - INNER_RING)) / spread;
+
+  const ringAt = (depth: number) => drawn * unitRing(depth);
 
   const place = (datum: TreeDatum, depth: number, from: number, to: number) => {
     const node = datum.node;
@@ -173,13 +197,20 @@ export function placeRadial(graph: RepertoireGraph, radius: number): Placement {
     if (kids.length === 0) return;
 
     const played = kids.reduce((sum, kid) => sum + kid.node.games, 0) || 1;
-    const even = 1 / kids.length;
     const width = to - from;
+    const claimed = kids.reduce(
+      (sum, kid) => sum + (demand.get(kid) ?? 0) / drawn,
+      0,
+    );
+    // Only bites when even the widened radius could not seat everyone, and then
+    // it squeezes every sibling by the same factor rather than starving one.
+    const squeeze = claimed > width ? width / claimed : 1;
+    const surplus = Math.max(0, width - claimed);
+
     let cursor = from;
     for (const kid of kids) {
-      const share =
-        VOLUME_WEIGHT * (kid.node.games / played) + (1 - VOLUME_WEIGHT) * even;
-      const next = cursor + width * share;
+      const floor = ((demand.get(kid) ?? 0) / drawn) * squeeze;
+      const next = cursor + floor + surplus * (kid.node.games / played);
       place(kid, depth + 1, cursor, next);
       cursor = next;
     }

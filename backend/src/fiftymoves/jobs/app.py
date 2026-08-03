@@ -18,6 +18,10 @@ def celery_app() -> Celery:
             include=["fiftymoves.jobs.tasks"],
         )
         _app.conf.update(
+            # Measurement forks an engine pool, which a prefork worker cannot do,
+            # so it gets its own queue to be served by a solo-pool worker.
+            task_routes={"fiftymoves.measure_losses": {"queue": "measure"}},
+            task_default_queue="default",
             task_track_started=True,
             task_serializer="json",
             result_serializer="json",
