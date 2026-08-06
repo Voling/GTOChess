@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import SimpleNamespace
+from typing import Any
 
 import chess
 import pytest
@@ -30,6 +32,7 @@ from fiftymoves.llm.provider import (
     PositionBrief,
     ProviderError,
     effort_level,
+    move_cache_breakpoint,
     render_request,
 )
 from fiftymoves.llm.tools import EngineProbe
@@ -205,6 +208,46 @@ class TestRequestRendering:
     def test_the_root_is_named_rather_than_left_blank(self) -> None:
         brief = PositionBrief(line="", side_to_move="White", variant="standard", depth_ply=0)
         assert "the starting position" in render_request(brief, [])
+
+
+def turn(text: str) -> list[Any]:
+    return [{"type": "tool_result", "tool_use_id": text, "content": text}]
+
+
+class TestCacheBreakpoint:
+    def test_the_tail_of_the_conversation_is_marked(self) -> None:
+        messages: list[Any] = [
+            {"role": "user", "content": "ask"},
+            {"role": "user", "content": turn("a")},
+        ]
+        move_cache_breakpoint(messages)
+        assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_only_one_breakpoint_survives_a_second_turn(self) -> None:
+        first = turn("a")
+        messages: list[Any] = [
+            {"role": "user", "content": "ask"},
+            {"role": "user", "content": first},
+        ]
+        move_cache_breakpoint(messages)
+        messages.append({"role": "user", "content": turn("b")})
+        move_cache_breakpoint(messages)
+        assert "cache_control" not in first[0]
+        assert "cache_control" in messages[-1]["content"][-1]
+
+    def test_a_plain_string_message_is_left_alone(self) -> None:
+        messages: list[Any] = [{"role": "user", "content": "ask"}]
+        move_cache_breakpoint(messages)
+        assert messages[0]["content"] == "ask"
+
+    def test_model_blocks_are_not_treated_as_dicts(self) -> None:
+        block = SimpleNamespace(type="text", text="thinking")
+        messages: list[Any] = [
+            {"role": "assistant", "content": [block]},
+            {"role": "user", "content": turn("a")},
+        ]
+        move_cache_breakpoint(messages)
+        assert not hasattr(block, "cache_control")
 
 
 class TestCache:

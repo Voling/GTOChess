@@ -25,7 +25,12 @@ resource "aws_launch_template" "worker" {
     arn = aws_iam_instance_profile.instance.arn
   }
 
-  vpc_security_group_ids = [aws_security_group.tasks.id]
+  network_interfaces {
+    device_index                = 0
+    associate_public_ip_address = !var.enable_nat_gateway
+    security_groups             = [aws_security_group.tasks.id]
+    delete_on_termination       = true
+  }
 
   user_data = base64encode(<<-EOT
     #!/bin/bash
@@ -47,7 +52,7 @@ resource "aws_launch_template" "worker" {
 
 resource "aws_autoscaling_group" "worker" {
   name                = "${local.name}-worker"
-  vpc_zone_identifier = aws_subnet.private[*].id
+  vpc_zone_identifier = local.egress_subnets
   min_size            = var.worker_min_size
   max_size            = var.worker_max_size
   desired_capacity    = var.worker_min_size
@@ -107,12 +112,12 @@ resource "aws_ecs_capacity_provider" "worker" {
 
 resource "aws_ecs_cluster_capacity_providers" "this" {
   cluster_name       = aws_ecs_cluster.this.name
-  capacity_providers = [aws_ecs_capacity_provider.worker.name, "FARGATE"]
+  capacity_providers = [aws_ecs_capacity_provider.worker.name, "FARGATE", "FARGATE_SPOT"]
 
   # The API and the web tier are small and latency bound, so they sit on Fargate
   # and are not competing with the engine for cores.
   default_capacity_provider_strategy {
-    capacity_provider = "FARGATE"
+    capacity_provider = local.fargate_strategy
     weight            = 1
   }
 }

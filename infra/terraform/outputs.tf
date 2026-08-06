@@ -27,7 +27,11 @@ output "cognito_hosted_ui" {
 }
 
 output "database_endpoint" {
-  value = aws_db_instance.this.address
+  value = one(aws_db_instance.this[*].address)
+}
+
+output "ecs_cluster" {
+  value = aws_ecs_cluster.this.name
 }
 
 output "redis_endpoint" {

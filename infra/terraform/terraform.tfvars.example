@@ -7,12 +7,23 @@ environment = "prod"
 domain_name    = ""
 hosted_zone_id = ""
 
+# The three settings that decide the standing bill. As shipped the stack idles
+# around $45 a month; turning the gateway and the database on and taking the
+# services off spot takes it past $200.
+enable_nat_gateway = false
+enable_database    = false
+use_fargate_spot   = true
+
+api_desired_count = 1
+web_desired_count = 1
+
 # Diversify. One instance type is one spot pool, and the first pool to tighten
 # takes the whole fleet with it.
 worker_instance_types = ["c7a.2xlarge", "c7i.2xlarge", "c6a.2xlarge"]
 worker_min_size       = 0
 worker_max_size       = 4
 
+# Read only when enable_database is true.
 db_instance_class = "db.t4g.medium"
 redis_node_type   = "cache.t4g.micro"
 

@@ -1,6 +1,11 @@
 locals {
   name = "${var.project}-${var.environment}"
   azs  = slice(data.aws_availability_zones.available.names, 0, var.az_count)
+
+  # Without a NAT there is no route out of the private subnets, so anything that
+  # has to reach Anthropic, lichess or ECR runs in the public ones instead.
+  egress_subnets = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
+  public_task_ip = var.enable_nat_gateway ? "DISABLED" : "ENABLED"
 }
 
 resource "aws_vpc" "this" {
@@ -39,16 +44,29 @@ resource "aws_subnet" "private" {
 # egress and the cheaper trade at this size; add one per AZ before this carries
 # traffic you cannot drop.
 resource "aws_eip" "nat" {
+  count  = var.enable_nat_gateway ? 1 : 0
   domain = "vpc"
   tags   = { Name = "${local.name}-nat" }
 }
 
 resource "aws_nat_gateway" "this" {
-  allocation_id = aws_eip.nat.id
+  count         = var.enable_nat_gateway ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public[0].id
   depends_on    = [aws_internet_gateway.this]
 
   tags = { Name = local.name }
+}
+
+# Free, and it keeps ECR layer pulls off the metered path whichever way the
+# gateway is set.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.this.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.public.id, aws_route_table.private.id]
+
+  tags = { Name = "${local.name}-s3" }
 }
 
 resource "aws_route_table" "public" {
@@ -65,9 +83,12 @@ resource "aws_route_table" "public" {
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
 
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.this.id
+  dynamic "route" {
+    for_each = var.enable_nat_gateway ? [1] : []
+    content {
+      cidr_block     = "0.0.0.0/0"
+      nat_gateway_id = aws_nat_gateway.this[0].id
+    }
   }
 
   tags = { Name = "${local.name}-private" }

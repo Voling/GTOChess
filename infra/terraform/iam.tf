@@ -32,8 +32,11 @@ resource "aws_iam_role_policy_attachment" "execution" {
 # execution role rather than the task role.
 data "aws_iam_policy_document" "read_secrets" {
   statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.anthropic.arn, aws_secretsmanager_secret.database.arn]
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = concat(
+      [aws_secretsmanager_secret.anthropic.arn],
+      aws_secretsmanager_secret.database[*].arn,
+    )
   }
 }
 

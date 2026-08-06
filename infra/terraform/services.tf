@@ -25,10 +25,14 @@ locals {
     { name = "FIFTYMOVES_AUTH_REQUIRED", value = "true" },
   ]
 
-  common_secrets = [
-    { name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic.arn },
-    { name = "FIFTYMOVES_DATABASE_URL", valueFrom = aws_secretsmanager_secret.database.arn },
-  ]
+  common_secrets = concat(
+    [{ name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic.arn }],
+    var.enable_database
+    ? [{ name = "FIFTYMOVES_DATABASE_URL", valueFrom = aws_secretsmanager_secret.database[0].arn }]
+    : [],
+  )
+
+  fargate_strategy = var.use_fargate_spot ? "FARGATE_SPOT" : "FARGATE"
 }
 
 resource "aws_ecs_task_definition" "api" {
@@ -112,8 +116,11 @@ resource "aws_ecs_task_definition" "web" {
 # Two worker families. The default queue runs prefork, which cannot fork the
 # engine pool; the measure queue runs solo so the sweep can own the whole host.
 resource "aws_ecs_task_definition" "worker" {
-  family                   = "${local.name}-worker"
-  network_mode             = "awsvpc"
+  family = "${local.name}-worker"
+  # Bridge rather than awsvpc: awsvpc gives the task its own ENI, and an EC2 task
+  # ENI takes no public address, so with the NAT off it would have no way out.
+  # On the host network it inherits the instance's route to the internet.
+  network_mode             = "bridge"
   requires_compatibilities = ["EC2"]
   cpu                      = var.worker_cpu
   memory                   = var.worker_memory
@@ -158,7 +165,7 @@ resource "aws_ecs_task_definition" "worker" {
 
 resource "aws_ecs_task_definition" "measure" {
   family                   = "${local.name}-measure"
-  network_mode             = "awsvpc"
+  network_mode             = "bridge"
   requires_compatibilities = ["EC2"]
   cpu                      = var.measure_cpu
   memory                   = var.measure_memory
@@ -205,12 +212,17 @@ resource "aws_ecs_service" "api" {
   name            = "${local.name}-api"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 2
-  launch_type     = "FARGATE"
+  desired_count   = var.api_desired_count
+
+  capacity_provider_strategy {
+    capacity_provider = local.fargate_strategy
+    weight            = 1
+  }
 
   network_configuration {
-    subnets         = aws_subnet.private[*].id
-    security_groups = [aws_security_group.tasks.id]
+    subnets          = local.egress_subnets
+    security_groups  = [aws_security_group.tasks.id]
+    assign_public_ip = local.public_task_ip == "ENABLED"
   }
 
   load_balancer {
@@ -226,12 +238,17 @@ resource "aws_ecs_service" "web" {
   name            = "${local.name}-web"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = 2
-  launch_type     = "FARGATE"
+  desired_count   = var.web_desired_count
+
+  capacity_provider_strategy {
+    capacity_provider = local.fargate_strategy
+    weight            = 1
+  }
 
   network_configuration {
-    subnets         = aws_subnet.private[*].id
-    security_groups = [aws_security_group.tasks.id]
+    subnets          = local.egress_subnets
+    security_groups  = [aws_security_group.tasks.id]
+    assign_public_ip = local.public_task_ip == "ENABLED"
   }
 
   load_balancer {
@@ -253,11 +270,6 @@ resource "aws_ecs_service" "worker" {
     capacity_provider = aws_ecs_capacity_provider.worker.name
     weight            = 1
   }
-
-  network_configuration {
-    subnets         = aws_subnet.private[*].id
-    security_groups = [aws_security_group.tasks.id]
-  }
 }
 
 resource "aws_ecs_service" "measure" {
@@ -271,11 +283,6 @@ resource "aws_ecs_service" "measure" {
     weight            = 1
   }
 
-  network_configuration {
-    subnets         = aws_subnet.private[*].id
-    security_groups = [aws_security_group.tasks.id]
-  }
-
   lifecycle {
     ignore_changes = [desired_count]
   }
@@ -285,7 +292,7 @@ resource "aws_appautoscaling_target" "api" {
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
-  min_capacity       = 2
+  min_capacity       = var.api_desired_count
   max_capacity       = 10
 }
 
@@ -309,7 +316,7 @@ resource "aws_appautoscaling_target" "web" {
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.web.name}"
   scalable_dimension = "ecs:service:DesiredCount"
-  min_capacity       = 2
+  min_capacity       = var.web_desired_count
   max_capacity       = 6
 }
 

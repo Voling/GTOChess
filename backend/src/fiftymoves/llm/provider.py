@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol, cast
 
 import anthropic
 from anthropic.types.beta import (
+    BetaCacheControlEphemeralParam,
     BetaMessageParam,
     BetaOutputConfigParam,
     BetaTextBlockParam,
@@ -18,6 +19,8 @@ from fiftymoves.llm.prompts import prompt
 from fiftymoves.llm.tools import ProbeLimit
 
 MAX_TURNS = 8
+
+CACHE_CONTROL: BetaCacheControlEphemeralParam = {"type": "ephemeral"}
 
 
 class Persona(StrEnum):
@@ -109,6 +112,19 @@ class ExplanationProvider(Protocol):
     ) -> Draft: ...
 
 
+def move_cache_breakpoint(messages: list[BetaMessageParam]) -> None:
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict):
+                block.pop("cache_control", None)
+    tail = messages[-1].get("content")
+    if isinstance(tail, list) and tail and isinstance(tail[-1], dict):
+        tail[-1]["cache_control"] = dict(CACHE_CONTROL)
+
+
 def render_request(
     brief: PositionBrief, evidence: Sequence[Evidence], ask: str | None = None
 ) -> str:
@@ -180,7 +196,7 @@ class AnthropicProvider:
             {
                 "type": "text",
                 "text": system_prompt(persona, probing=probe is not None),
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": CACHE_CONTROL,
             }
         ]
         output_config: BetaOutputConfigParam = {
@@ -239,5 +255,6 @@ class AnthropicProvider:
                     }
                 )
             messages.append(cast(BetaMessageParam, {"role": "user", "content": results}))
+            move_cache_breakpoint(messages)
 
         raise ProviderError("the model kept asking the engine without answering")

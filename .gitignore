@@ -31,3 +31,7 @@ data/
 *.tfstate.*
 .terraform.lock.hcl
 terraform.tfvars
+# Written by the Terraform workflow from repository secrets, never committed.
+ci.auto.tfvars
+infra/terraform/backend.tf
+tfplan

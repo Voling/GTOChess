@@ -50,7 +50,7 @@ resource "aws_efs_file_system" "data" {
 resource "aws_efs_mount_target" "data" {
   count           = var.az_count
   file_system_id  = aws_efs_file_system.data.id
-  subnet_id       = aws_subnet.private[count.index].id
+  subnet_id       = local.egress_subnets[count.index]
   security_groups = [aws_security_group.data.id]
 }
 
@@ -75,16 +75,19 @@ resource "aws_efs_access_point" "data" {
 }
 
 resource "aws_db_subnet_group" "this" {
+  count      = var.enable_database ? 1 : 0
   name       = local.name
   subnet_ids = aws_subnet.private[*].id
 }
 
 resource "random_password" "db" {
+  count   = var.enable_database ? 1 : 0
   length  = 32
   special = false
 }
 
 resource "aws_db_instance" "this" {
+  count          = var.enable_database ? 1 : 0
   identifier     = local.name
   engine         = "postgres"
   engine_version = "16"
@@ -96,10 +99,10 @@ resource "aws_db_instance" "this" {
 
   db_name  = var.project
   username = var.project
-  password = random_password.db.result
+  password = random_password.db[0].result
   port     = 5432
 
-  db_subnet_group_name   = aws_db_subnet_group.this.name
+  db_subnet_group_name   = aws_db_subnet_group.this[0].name
   vpc_security_group_ids = [aws_security_group.data.id]
 
   backup_retention_period   = 7
@@ -109,12 +112,13 @@ resource "aws_db_instance" "this" {
 
   # pgvector ships with RDS Postgres; the extension still has to be created in
   # the database once, which the application migration does.
-  parameter_group_name = aws_db_parameter_group.this.name
+  parameter_group_name = aws_db_parameter_group.this[0].name
 
   tags = { Name = local.name }
 }
 
 resource "aws_db_parameter_group" "this" {
+  count  = var.enable_database ? 1 : 0
   name   = local.name
   family = "postgres16"
 

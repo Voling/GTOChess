@@ -1,0 +1,160 @@
+name: Terraform
+
+# Manual only, and deliberately so. Nothing here should ever fire off a push:
+# the stack owns a database ceiling, a Cognito pool and a spot fleet, and none of
+# those should move because someone edited a component.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to run
+        type: choice
+        default: plan
+        options: [plan, apply, destroy]
+      image_tag:
+        description: Tag the task definitions should name
+        type: string
+        default: latest
+
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    working-directory: infra/terraform
+    shell: bash
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    # apply and destroy stop here for approval when the environment carries a
+    # protection rule. plan needs no gate, so it runs against a bare environment.
+    environment: ${{ inputs.action == 'plan' && 'terraform-plan' || 'terraform-apply' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # 1.10 or later: locking without a DynamoDB table needs use_lockfile.
+          terraform_version: ${{ secrets.TERRAFORM_VERSION || '1.10.5' }}
+          terraform_wrapper: false
+
+      # Written here rather than committed so a local `terraform init` still gets
+      # local state and never reaches for a bucket that may not exist.
+      - name: Point state at S3
+        env:
+          BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUCKET" ]; then
+            echo "TF_STATE_BUCKET unset. State will be local to this runner and lost when it ends."
+            echo "That is fine for a plan and wrong for an apply."
+            exit 0
+          fi
+          cat > backend.tf <<'EOT'
+          terraform {
+            backend "s3" {}
+          }
+          EOT
+
+      - name: Init
+        env:
+          BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          KEY: ${{ secrets.TF_STATE_KEY || 'fiftymoves/prod/terraform.tfstate' }}
+          REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUCKET" ]; then
+            terraform init -input=false
+            exit 0
+          fi
+          args=(-input=false -backend-config="bucket=$BUCKET" -backend-config="key=$KEY" -backend-config="region=$REGION")
+          if [ -n "$LOCK_TABLE" ]; then
+            args+=(-backend-config="dynamodb_table=$LOCK_TABLE")
+          else
+            args+=(-backend-config="use_lockfile=true")
+          fi
+          terraform init "${args[@]}"
+
+      - name: Format and validate
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      # Every var is a secret with a default, so a stack can come up with none of
+      # them set and be tuned later without touching this file.
+      - name: Collect variables
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          DOMAIN_NAME: ${{ secrets.TF_VAR_DOMAIN_NAME }}
+          HOSTED_ZONE_ID: ${{ secrets.TF_VAR_HOSTED_ZONE_ID }}
+          PROJECT: ${{ secrets.TF_VAR_PROJECT }}
+          ENVIRONMENT: ${{ secrets.TF_VAR_ENVIRONMENT }}
+          REGION: ${{ secrets.AWS_REGION }}
+          ENABLE_NAT_GATEWAY: ${{ secrets.TF_VAR_ENABLE_NAT_GATEWAY }}
+          ENABLE_DATABASE: ${{ secrets.TF_VAR_ENABLE_DATABASE }}
+          USE_FARGATE_SPOT: ${{ secrets.TF_VAR_USE_FARGATE_SPOT }}
+          WORKER_MAX_SIZE: ${{ secrets.TF_VAR_WORKER_MAX_SIZE }}
+        run: |
+          set -euo pipefail
+          : > ci.auto.tfvars
+          quoted() { if [ -n "$2" ]; then printf '%s = "%s"\n' "$1" "$2" >> ci.auto.tfvars; fi; }
+          bare()   { if [ -n "$2" ]; then printf '%s = %s\n'   "$1" "$2" >> ci.auto.tfvars; fi; }
+
+          quoted image_tag "$IMAGE_TAG"
+          quoted domain_name "$DOMAIN_NAME"
+          quoted hosted_zone_id "$HOSTED_ZONE_ID"
+          quoted project "$PROJECT"
+          quoted environment "$ENVIRONMENT"
+          quoted region "$REGION"
+          bare enable_nat_gateway "$ENABLE_NAT_GATEWAY"
+          bare enable_database "$ENABLE_DATABASE"
+          bare use_fargate_spot "$USE_FARGATE_SPOT"
+          bare worker_max_size "$WORKER_MAX_SIZE"
+
+          echo "--- ci.auto.tfvars ---"
+          cat ci.auto.tfvars
+
+      - name: Plan
+        if: inputs.action != 'destroy'
+        run: terraform plan -input=false -lock-timeout=5m -out=tfplan
+
+      - name: Plan a destroy
+        if: inputs.action == 'destroy'
+        run: terraform plan -input=false -lock-timeout=5m -destroy -out=tfplan
+
+      - name: Summarise the plan
+        run: |
+          {
+            echo '### terraform ${{ inputs.action }}'
+            echo '```'
+            terraform show -no-color tfplan | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply
+        if: inputs.action != 'plan'
+        run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
+
+      - name: Outputs
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo '### Stack'
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

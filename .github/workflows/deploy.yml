@@ -1,0 +1,181 @@
+name: Deploy
+
+# Images only. The stack itself is terraform.yml, which stays on a manual
+# trigger so a frontend change never moves infrastructure.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to build and roll out
+        type: choice
+        default: both
+        options: [both, web, backend]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # A push touching only the frontend rebuilds only the frontend. Dispatch says
+  # what it wants and skips the diff entirely.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.decide.outputs.web }}
+      backend: ${{ steps.decide.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          TARGET: ${{ inputs.target }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          web=false
+          backend=false
+
+          if [ -n "$TARGET" ]; then
+            if [ "$TARGET" = "both" ] || [ "$TARGET" = "web" ]; then web=true; fi
+            if [ "$TARGET" = "both" ] || [ "$TARGET" = "backend" ]; then backend=true; fi
+          else
+            base="$BEFORE"
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+              base=$(git rev-parse HEAD~1)
+            fi
+            changed=$(git diff --name-only "$base" HEAD)
+            echo "$changed"
+            if echo "$changed" | grep -q '^frontend/'; then web=true; fi
+            if echo "$changed" | grep -q '^backend/'; then backend=true; fi
+          fi
+
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "web=$web backend=$backend"
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_WEB || 'fiftymoves-prod-web' }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_WEB || 'fiftymoves-prod-web' }}:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_BACKEND || 'fiftymoves-prod-backend' }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_BACKEND || 'fiftymoves-prod-backend' }}:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+  # The task definitions name :latest, which both jobs above just moved, so a
+  # forced deployment is the whole rollout. Terraform is not in this path.
+  rollout:
+    needs: [changes, web, backend]
+    if: always() && !cancelled() && !failure() && (needs.changes.outputs.web == 'true' || needs.changes.outputs.backend == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      - name: Force a new deployment on what changed
+        env:
+          CLUSTER: ${{ secrets.ECS_CLUSTER || 'fiftymoves-prod' }}
+          WEB: ${{ needs.changes.outputs.web }}
+          BACKEND: ${{ needs.changes.outputs.backend }}
+          SERVICE_WEB: ${{ secrets.ECS_SERVICE_WEB || 'fiftymoves-prod-web' }}
+          SERVICE_API: ${{ secrets.ECS_SERVICE_API || 'fiftymoves-prod-api' }}
+          SERVICE_WORKER: ${{ secrets.ECS_SERVICE_WORKER || 'fiftymoves-prod-worker' }}
+        run: |
+          set -euo pipefail
+          services=""
+          if [ "$WEB" = "true" ]; then
+            services="$services $SERVICE_WEB"
+          fi
+          if [ "$BACKEND" = "true" ]; then
+            services="$services $SERVICE_API $SERVICE_WORKER"
+          fi
+          for service in $services; do
+            echo "rolling $service"
+            aws ecs update-service --cluster "$CLUSTER" --service "$service" --force-new-deployment > /dev/null
+          done
+          for service in $services; do
+            aws ecs wait services-stable --cluster "$CLUSTER" --services "$service"
+            echo "$service stable"
+          done
+
+  # CloudFront caches the built assets, so a web rollout is not visible until the
+  # edge is told to forget them.
+  invalidate:
+    needs: [changes, rollout]
+    if: always() && !cancelled() && !failure() && needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      - env:
+          DISTRIBUTION: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          if [ -z "$DISTRIBUTION" ]; then
+            echo "CLOUDFRONT_DISTRIBUTION_ID unset, nothing to invalidate"
+            exit 0
+          fi
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION" --paths "/*" > /dev/null

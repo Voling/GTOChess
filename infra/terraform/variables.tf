@@ -85,6 +85,42 @@ variable "measure_memory" {
   default = 14336
 }
 
+# A NAT gateway is roughly $33 a month before it moves a byte. Off, the tasks sit
+# in public subnets and reach the internet directly; the task security group
+# still admits nothing but the load balancer, so nothing new is exposed.
+#
+# Interface VPC endpoints are the usual replacement and are the wrong trade here:
+# $0.01 per hour per endpoint per zone means ECR, Secrets Manager and Logs across
+# two zones cost more than the gateway they replace.
+variable "enable_nat_gateway" {
+  type    = bool
+  default = false
+}
+
+# Nothing reads a database yet. The stores are JSONL on the shared filesystem, so
+# this stays off until they move and the schema exists.
+variable "enable_database" {
+  type    = bool
+  default = false
+}
+
+# Spot is about 70% off and can be reclaimed on two minutes notice. At one task
+# per service that means the odd gap while a replacement starts.
+variable "use_fargate_spot" {
+  type    = bool
+  default = true
+}
+
+variable "api_desired_count" {
+  type    = number
+  default = 1
+}
+
+variable "web_desired_count" {
+  type    = number
+  default = 1
+}
+
 variable "db_instance_class" {
   type    = string
   default = "db.t4g.medium"

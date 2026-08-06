@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str | None = None
     cognito_client_id: str | None = None
     cognito_region: str = "us-east-1"
-    analysis_daily_limit: int = 50
+    analysis_daily_limit: int = 10
 
     job_result_ttl_s: int = 86400
     job_report_every: int = 250
@@ -120,7 +120,6 @@ class Settings(BaseSettings):
     knowledge_depth: int = 18
     knowledge_budget: int = 600
 
-    database_url: str = "postgresql+psycopg://fiftymoves@localhost/fiftymoves"
     redis_url: str = "redis://localhost:6379/0"
     s3_bucket: str | None = None
 
