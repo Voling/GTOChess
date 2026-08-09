@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from fiftymoves.api.imports import read_job
-from fiftymoves.ingest.oauth import challenge_for, make_verifier
-from fiftymoves.ingest.pipeline import IngestProgress, IngestResult
-from fiftymoves.ingest.tokens import StoredToken, TokenStore
+from gtochess.api.imports import read_job
+from gtochess.ingest.oauth import challenge_for, make_verifier
+from gtochess.ingest.pipeline import IngestProgress, IngestResult
+from gtochess.ingest.tokens import StoredToken, TokenStore
 
 RESULT = {
     "username": "dylanette",
@@ -144,7 +144,7 @@ class TestIngestResult:
 
 def test_celery_app_is_configured_from_settings() -> None:
     pytest.importorskip("celery")
-    from fiftymoves.jobs.app import celery_app
+    from gtochess.jobs.app import celery_app
 
     app = celery_app()
     assert app.conf.task_serializer == "json"

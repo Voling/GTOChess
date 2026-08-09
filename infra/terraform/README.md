@@ -1,4 +1,4 @@
-# FiftyMoves on AWS
+# GTO Chess on AWS
 
 Route 53 and CloudFront at the edge, Cognito on the door, ECS underneath.
 
@@ -26,8 +26,11 @@ Roughly $45 a month idle, in us-east-1 at list price:
 | ALB | $16 |
 | ElastiCache `cache.t4g.micro` | $12 |
 | api, one task on Fargate Spot | $11 |
-| web, one task on Fargate Spot | $3 |
-| EFS, logs, ECR | ~$3 |
+| S3, EFS, logs, ECR | ~$3 |
+
+The frontend is not on that list. It is built to static files, synced to a
+private bucket, and served by CloudFront through an origin access control, so it
+runs no container and touches the load balancer only for `/api/*`.
 
 Three variables move that number, and all three ship set to the cheap side.
 
@@ -50,7 +53,7 @@ Set it false, or raise `api_desired_count`, when a gap stops being acceptable.
 
 The engine fleet is not on this list because it is not the cost driver. A full
 sweep of a 3,600 position repertoire is about 13 core hours, which is roughly 22
-cents of spot. The model is the expensive half: see `FIFTYMOVES_ANALYSIS_DAILY_LIMIT`
+cents of spot. The model is the expensive half: see `GTOCHESS_ANALYSIS_DAILY_LIMIT`
 in `backend/.env.example`, which is the ceiling on what one account can spend.
 
 ## Layout
@@ -58,11 +61,11 @@ in `backend/.env.example`, which is the ceiling on what one account can spend.
 | File | Holds |
 |---|---|
 | `network.tf` | VPC, public and private subnets, optional NAT, S3 endpoint, security groups |
-| `storage.tf` | ECR, EFS for the shared data directory, optional RDS, ElastiCache Redis |
+| `storage.tf` | ECR, the site bucket, EFS, optional RDS and object storage, ElastiCache Redis |
 | `cluster.tf` | ECS cluster, spot Auto Scaling group, capacity provider |
-| `services.tf` | Task definitions and services for api, web, worker and measure |
-| `alb.tf` | Internal load balancer and path routing |
-| `edge.tf` | ACM, CloudFront, Route 53 |
+| `services.tf` | Task definitions and services for api, worker and measure |
+| `alb.tf` | Load balancer, which carries the API and nothing else |
+| `edge.tf` | ACM, CloudFront, the SPA function, Route 53 |
 | `cognito.tf` | User pool, hosted UI domain, public client |
 | `iam.tf`, `secrets.tf` | Roles and the secrets |
 
@@ -83,7 +86,7 @@ Put the Anthropic key in by hand so it never enters Terraform state:
 
 ```sh
 aws secretsmanager put-secret-value \
-  --secret-id fiftymoves-prod/anthropic-api-key \
+  --secret-id gtochess-prod/anthropic-api-key \
   --secret-string sk-ant-...
 ```
 
@@ -94,49 +97,70 @@ only. Nothing in it fires off a push: the stack owns a spending ceiling, a user
 pool and a spot fleet, and none of those should move because someone edited a
 component.
 
-`.github/workflows/deploy.yml` is the other half. It builds whichever of the two
-images changed, pushes `:latest` and `:<sha>`, forces a new deployment on the
-services that consume them, and invalidates CloudFront when the frontend moved.
-Task definitions name `:latest`, so image rollout never needs Terraform.
+`.github/workflows/deploy.yml` is the other half and is also manual. Landing on
+main is not a decision to ship, so it runs from the Run workflow button with a
+choice of `both`, `web` or `backend`.
+
+The two halves of the app deploy differently. `backend` builds an image, pushes
+`:latest` and `:<sha>`, and forces a new deployment; task definitions name
+`:latest`, so that never needs Terraform. `web` builds static files and syncs
+them to the site bucket, then invalidates `/` and `/index.html` at the edge. The
+hashed assets are immutable by name and never need invalidating.
+
+Run it from the default branch. The deploy role trusts
+`repo:<owner>/GTOChess:ref:refs/heads/main` and nothing else, so a dispatch from
+another branch cannot authenticate.
 
 Every value is a repository secret with a working default, so the stack comes up
 with only credentials set.
 
 | Secret | Default | Used by |
 |---|---|---|
-| `AWS_ROLE_ARN` | — | both, for OIDC |
+| `AWS_ROLE_ARN` | — | deploy, and terraform if the next one is unset |
+| `AWS_TERRAFORM_ROLE_ARN` | falls back to `AWS_ROLE_ARN` | terraform |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | both, if not using OIDC |
 | `AWS_REGION` | `us-east-1` | both |
 | `TF_STATE_BUCKET` | — | terraform; unset means local state, fine for a plan and wrong for an apply |
-| `TF_STATE_KEY` | `fiftymoves/prod/terraform.tfstate` | terraform |
+| `TF_STATE_KEY` | `gtochess/prod/terraform.tfstate` | terraform |
 | `TF_STATE_LOCK_TABLE` | — | terraform; unset locks with S3 itself |
 | `TERRAFORM_VERSION` | `1.10.5` | terraform |
 | `TF_VAR_DOMAIN_NAME`, `TF_VAR_HOSTED_ZONE_ID` | — | terraform |
-| `TF_VAR_PROJECT`, `TF_VAR_ENVIRONMENT` | `fiftymoves`, `prod` | terraform |
+| `TF_VAR_PROJECT`, `TF_VAR_ENVIRONMENT` | `gtochess`, `prod` | terraform |
 | `TF_VAR_ENABLE_NAT_GATEWAY`, `TF_VAR_ENABLE_DATABASE`, `TF_VAR_USE_FARGATE_SPOT` | as shipped | terraform |
 | `TF_VAR_WORKER_MAX_SIZE` | `4` | terraform |
-| `ECR_BACKEND`, `ECR_WEB` | `fiftymoves-prod-backend`, `-web` | deploy |
-| `ECS_CLUSTER` | `fiftymoves-prod` | deploy |
-| `ECS_SERVICE_API`, `ECS_SERVICE_WEB`, `ECS_SERVICE_WORKER` | `fiftymoves-prod-*` | deploy |
+| `ECR_BACKEND` | `gtochess-prod-backend` | deploy |
+| `SITE_BUCKET` | `gtochess-prod-site` | deploy |
+| `ECS_CLUSTER` | `gtochess-prod` | deploy |
+| `ECS_SERVICE_API`, `ECS_SERVICE_WORKER` | `gtochess-prod-*` | deploy |
 | `CLOUDFRONT_DISTRIBUTION_ID` | — | deploy; unset skips the invalidation |
 
 Apply and destroy run in the `terraform-apply` environment. Add a required
 reviewer to it in the repository settings and both stop for approval; plan uses
 `terraform-plan` and needs no gate.
 
-For OIDC, trust the repository in the role's policy rather than issuing keys:
+## Roles
 
-```json
-{
-  "Effect": "Allow",
-  "Principal": { "Federated": "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com" },
-  "Action": "sts:AssumeRoleWithWebIdentity",
-  "Condition": {
-    "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-    "StringLike": { "token.actions.githubusercontent.com:sub": "repo:<owner>/FiftyMoves:*" }
-  }
-}
+`../bootstrap.sh` creates both, and is the only thing here that cannot be made
+by the stack it makes. Rerunning it is safe.
+
+```sh
+REPO=<owner>/GTOChess ./infra/bootstrap.sh
 ```
+
+Two roles rather than one, because the two workflows want very different
+things. Terraform is manual, rare, and has to create IAM. Deploy runs on every
+push to main and only needs to push one image, roll two services, replace the
+site objects and invalidate one path.
+
+Each is scoped to the job context rather than to the repository, which is the
+part worth reading. The terraform role is assumable only from the
+`terraform-plan` and `terraform-apply` environments, and the deploy role only
+from a push to `main`. A pull request from a fork carries neither subject, so it
+can assume neither role however the workflow file is edited in that fork.
+
+The terraform role gets `PowerUserAccess`, which covers every service in the
+stack and deliberately excludes IAM, plus an inline policy adding back exactly
+the IAM terraform uses, restricted to `gtochess-*` names.
 
 ## Accounts
 

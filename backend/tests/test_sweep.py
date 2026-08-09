@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fiftymoves.analysis.sweep import depth_for, plan_sweep
-from fiftymoves.domain.book import PositionLosses
-from fiftymoves.domain.games import Side
-from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
-from fiftymoves.domain.models import Variant
-from fiftymoves.ingest.loss_store import LossStore
+from gtochess.analysis.sweep import depth_for, plan_sweep
+from gtochess.domain.book import PositionLosses
+from gtochess.domain.games import Side
+from gtochess.domain.graph import GraphEdge, GraphNode, RepertoireGraph
+from gtochess.domain.models import Variant
+from gtochess.ingest.loss_store import LossStore
 
 EPD = "8/8/8/8/8/8/8/8 w - -"
 

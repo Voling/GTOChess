@@ -1,4 +1,4 @@
-# FiftyMoves
+# GTO Chess
 
 Knowledge graph and assessment tool for chess openings, built from lichess.org and
 chess.com games. Design notes are in [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
@@ -41,8 +41,8 @@ curl localhost:8010/health
 
 Compose brings up the client on 5173, the API on 8010, Postgres on 5432 and Redis on
 6379. The client proxies `/api` to the API container, so the browser talks to one
-origin. The API port defaults to 8010 because 8000 is often taken; `FIFTYMOVES_API_PORT`
-and `FIFTYMOVES_WEB_PORT` override both.
+origin. The API port defaults to 8010 because 8000 is often taken; `GTOCHESS_API_PORT`
+and `GTOCHESS_WEB_PORT` override both.
 
 ## Running on Kubernetes
 
@@ -52,10 +52,10 @@ skaffold dev
 
 Builds both images, applies `.kube/base` with kustomize, and forwards the client to
 5173 and the API to 8010. `skaffold run` deploys once without watching. The API reads
-its Anthropic key from a `fiftymoves-secrets` secret, which is optional:
+its Anthropic key from a `gtochess-secrets` secret, which is optional:
 
 ```
-kubectl create secret generic fiftymoves-secrets --from-literal=anthropic-api-key=<key>
+kubectl create secret generic gtochess-secrets --from-literal=anthropic-api-key=<key>
 ```
 
 Without it the API still answers; explanations fall back to the deterministic
@@ -68,9 +68,9 @@ cd backend
 python -m venv .venv
 .venv/Scripts/activate
 pip install -e ".[dev]"
-python -m fiftymoves.tools.fetch_stockfish
+python -m gtochess.tools.fetch_stockfish
 cp .env.example .env
-uvicorn fiftymoves.api.main:app --reload
+uvicorn gtochess.api.main:app --reload
 ```
 
 On macOS and Linux, activate with `source .venv/bin/activate`.
@@ -104,13 +104,13 @@ one; locally:
 
 ```
 cd backend
-celery -A fiftymoves.jobs.app worker --loglevel=info
+celery -A gtochess.jobs.app worker --loglevel=info
 ```
 
 The same pipeline is available as a one-shot command:
 
 ```
-python -m fiftymoves.tools.ingest_lichess <username> --max 28000 --out data
+python -m gtochess.tools.ingest_lichess <username> --max 28000 --out data
 ```
 
 Either path writes games and decision positions to `data/` as they arrive, so an
@@ -131,7 +131,7 @@ DELETE /api/auth/lichess            -> forget the token
 
 The flow is OAuth2 with PKCE, so there is no client secret and no app registration.
 The token is written to `data/lichess_token.json`; delete that file or call the
-DELETE endpoint to revoke locally. `FIFTYMOVES_LICHESS_TOKEN` still works and takes
+DELETE endpoint to revoke locally. `GTOCHESS_LICHESS_TOKEN` still works and takes
 precedence if you would rather paste a personal token yourself.
 
 ## Checking moves against the engine
@@ -161,16 +161,16 @@ The second form skips the tests that need a provisioned engine.
 
 ## Configuration
 
-Settings are read from environment variables prefixed `FIFTYMOVES_`, or from
+Settings are read from environment variables prefixed `GTOCHESS_`, or from
 `backend/.env`. Every setting and its default is listed in
 [`backend/.env.example`](backend/.env.example), covering engine depth, the thresholds
 that decide what counts as a real choice, position selection budgets, trait sample
 floors, the lichess client, opening family measurement, and the explanation provider.
 
 Explanations call Claude when a key is present, resolved from
-`FIFTYMOVES_ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY`. With no key the API falls back
+`GTOCHESS_ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY`. With no key the API falls back
 to a provider that reads the measurements out directly, so the endpoint always answers.
-Set `FIFTYMOVES_LLM_PROVIDER=deterministic` to keep it offline even when a key exists.
+Set `GTOCHESS_LLM_PROVIDER=deterministic` to keep it offline even when a key exists.
 
 ## Backend layout
 
@@ -178,7 +178,7 @@ Set `FIFTYMOVES_LLM_PROVIDER=deterministic` to keep it offline even when a key e
 backend/
   engine.lock.json        pinned engine version, assets, digests
   Dockerfile              engine, python-build, runtime and dev stages
-  src/fiftymoves/
+  src/gtochess/
     layout.py             paths and platform slug, stdlib only
     config.py             settings and engine resolution
     api/                  FastAPI app

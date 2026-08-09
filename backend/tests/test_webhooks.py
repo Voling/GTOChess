@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from fiftymoves.jobs.notify import (
+from gtochess.jobs.notify import (
     EVENT_HEADER,
     SIGNATURE_HEADER,
     TIMESTAMP_HEADER,

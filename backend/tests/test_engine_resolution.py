@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from fiftymoves import layout
-from fiftymoves.config import EngineNotProvisioned, Settings
+from gtochess import layout
+from gtochess.config import EngineNotProvisioned, Settings
 
 
 def _fake_binary(directory: Path) -> Path:
@@ -39,18 +39,16 @@ class TestEngineResolution:
         container = _fake_binary(tmp_path / "opt")
         _fake_binary(tmp_path / "local")
         monkeypatch.setattr(layout, "CONTAINER_ENGINE_DIR", tmp_path / "opt")
-        monkeypatch.setattr("fiftymoves.config.CONTAINER_ENGINE_DIR", tmp_path / "opt")
-        monkeypatch.setattr("fiftymoves.config.local_engine_dir", lambda: tmp_path / "local")
+        monkeypatch.setattr("gtochess.config.CONTAINER_ENGINE_DIR", tmp_path / "opt")
+        monkeypatch.setattr("gtochess.config.local_engine_dir", lambda: tmp_path / "local")
 
         assert Settings().resolve_engine_path() == container
 
     def test_never_falls_back_to_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The load-bearing assertion: an unprovisioned environment must raise,
         even when a perfectly good stockfish sits on PATH."""
-        monkeypatch.setattr("fiftymoves.config.CONTAINER_ENGINE_DIR", Path("/nonexistent/opt"))
-        monkeypatch.setattr(
-            "fiftymoves.config.local_engine_dir", lambda: Path("/nonexistent/vendor")
-        )
+        monkeypatch.setattr("gtochess.config.CONTAINER_ENGINE_DIR", Path("/nonexistent/opt"))
+        monkeypatch.setattr("gtochess.config.local_engine_dir", lambda: Path("/nonexistent/vendor"))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
         with pytest.raises(EngineNotProvisioned) as excinfo:

@@ -4,11 +4,11 @@ from typing import Any
 
 import chess
 
-from fiftymoves.domain.games import GameRecord, GameSource, Side
-from fiftymoves.domain.graph import GraphEdge
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import Variant
-from fiftymoves.ingest.graph import build_graph, family_floors
+from gtochess.domain.games import GameRecord, GameSource, Side
+from gtochess.domain.graph import GraphEdge
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import Variant
+from gtochess.ingest.graph import build_graph, family_floors
 
 ROOT = position_key(chess.Board()).digest
 

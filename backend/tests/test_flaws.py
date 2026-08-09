@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.flaws import find_flaws
-from fiftymoves.analysis.profile import opening_edge
-from fiftymoves.domain.flaws import IntentConfidence, OpeningRecord
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.profile import MoveDecision, Trait
+from gtochess.analysis.flaws import find_flaws
+from gtochess.analysis.profile import opening_edge
+from gtochess.domain.flaws import IntentConfidence, OpeningRecord
+from gtochess.domain.identity import position_key
+from gtochess.domain.profile import MoveDecision, Trait
 
 BASE_KEY = position_key(chess.Board())
 

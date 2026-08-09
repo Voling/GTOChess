@@ -4,17 +4,17 @@ from typing import Any
 
 import chess
 
-from fiftymoves.analysis.outcomes import measure_outcomes
-from fiftymoves.analysis.sensitivity import compute_sensitivity
-from fiftymoves.domain.annotations import MoveQuality
-from fiftymoves.domain.book import PositionLosses
-from fiftymoves.domain.games import GameRecord, GameSource
-from fiftymoves.domain.graph import GraphEdge
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import EvalLandscape, PlayableMove, Variant
-from fiftymoves.engine.reference import ReferenceEngine
-from fiftymoves.ingest.graph import build_graph
-from fiftymoves.llm.facts import build_evidence
+from gtochess.analysis.outcomes import measure_outcomes
+from gtochess.analysis.sensitivity import compute_sensitivity
+from gtochess.domain.annotations import MoveQuality
+from gtochess.domain.book import PositionLosses
+from gtochess.domain.games import GameRecord, GameSource
+from gtochess.domain.graph import GraphEdge
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import EvalLandscape, PlayableMove, Variant
+from gtochess.engine.reference import ReferenceEngine
+from gtochess.ingest.graph import build_graph
+from gtochess.llm.facts import build_evidence
 
 ROOT = position_key(chess.Board()).digest
 SANS = {"e2e4": "e4", "d2d4": "d4", "f2f3": "f3", "g1f3": "Nf3"}

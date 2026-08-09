@@ -7,14 +7,14 @@ from typing import Any
 import chess
 import pytest
 
-from fiftymoves.analysis.landscape import compute_landscape
-from fiftymoves.analysis.sensitivity import compute_sensitivity
-from fiftymoves.domain.explanations import Claim, Evidence, EvidenceKind, Explanation
-from fiftymoves.domain.graph import GraphEdge, GraphNode
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import Variant
-from fiftymoves.engine.reference import ReferenceEngine
-from fiftymoves.llm.explain import (
+from gtochess.analysis.landscape import compute_landscape
+from gtochess.analysis.sensitivity import compute_sensitivity
+from gtochess.domain.explanations import Claim, Evidence, EvidenceKind, Explanation
+from gtochess.domain.graph import GraphEdge, GraphNode
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import Variant
+from gtochess.engine.reference import ReferenceEngine
+from gtochess.llm.explain import (
     ExplanationCache,
     PersonalContext,
     build_provider,
@@ -24,8 +24,8 @@ from fiftymoves.llm.explain import (
     study_key,
     study_position,
 )
-from fiftymoves.llm.facts import build_evidence, mover_cp
-from fiftymoves.llm.provider import (
+from gtochess.llm.facts import build_evidence, mover_cp
+from gtochess.llm.provider import (
     DeterministicProvider,
     Draft,
     Persona,
@@ -35,7 +35,7 @@ from fiftymoves.llm.provider import (
     move_cache_breakpoint,
     render_request,
 )
-from fiftymoves.llm.tools import EngineProbe
+from gtochess.llm.tools import EngineProbe
 
 MATE_IN_ONE = "7k/6pp/8/8/8/8/1p6/R5K1 w - - 0 1"
 

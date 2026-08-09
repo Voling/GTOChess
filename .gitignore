@@ -29,9 +29,11 @@ data/
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
-terraform.tfvars
-# Written by the Terraform workflow from repository secrets, never committed.
-ci.auto.tfvars
+# .terraform.lock.hcl is committed on purpose, so CI resolves the same provider
+# versions a local plan did.
+# infra/terraform/terraform.tfvars is committed on purpose. It holds a domain,
+# a zone id and three switches, none of which is a secret, and hiding them costs
+# the ability to see what a plan is about to do.
+*.auto.tfvars
 infra/terraform/backend.tf
 tfplan

@@ -1,21 +1,21 @@
 apiVersion: skaffold/v4beta11
 kind: Config
 metadata:
-  name: fiftymoves
+  name: gtochess
 
 build:
   local:
     push: false
     useBuildkit: true
   artifacts:
-    - image: fiftymoves-api
+    - image: gtochess-api
       context: backend
       docker:
         dockerfile: Dockerfile
         target: runtime
         buildArgs:
           ENGINE_PLATFORM: linux-x86-64
-    - image: fiftymoves-web
+    - image: gtochess-web
       context: frontend
       docker:
         dockerfile: Dockerfile
@@ -31,11 +31,11 @@ deploy:
 
 portForward:
   - resourceType: service
-    resourceName: fiftymoves-web
+    resourceName: gtochess-web
     port: 80
     localPort: 5173
   - resourceType: service
-    resourceName: fiftymoves-api
+    resourceName: gtochess-api
     port: 8000
     localPort: 8010
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import chess
 import pytest
 
-from fiftymoves.engine.reference import ReferenceEngine
-from fiftymoves.llm.tools import BEST_REPLIES, EVALUATE_LINE, EngineProbe, ProbeLimit
+from gtochess.engine.reference import ReferenceEngine
+from gtochess.llm.tools import BEST_REPLIES, EVALUATE_LINE, EngineProbe, ProbeLimit
 
 MATE_IN_ONE = "7k/6pp/8/8/8/8/1p6/R5K1 w - - 0 1"
 

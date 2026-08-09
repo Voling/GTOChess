@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.profile import repertoire_consistency
-from fiftymoves.analysis.selection import select_for_analysis
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import Variant
-from fiftymoves.domain.profile import Trait, TraitUnit
-from fiftymoves.domain.repertoire import (
+from gtochess.analysis.profile import repertoire_consistency
+from gtochess.analysis.selection import select_for_analysis
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import Variant
+from gtochess.domain.profile import Trait, TraitUnit
+from gtochess.domain.repertoire import (
     RepertoireNode,
     SelectionPolicy,
     SkipReason,

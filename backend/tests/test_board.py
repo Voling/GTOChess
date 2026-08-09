@@ -3,9 +3,9 @@ from __future__ import annotations
 import chess
 import pytest
 
-from fiftymoves.domain.storyboard import ArrowRole, Glyph
-from fiftymoves.engine.reference import ReferenceEngine
-from fiftymoves.llm.board import MAX_LOSS_CP, BoardLimit, BoardSession, glyph_for
+from gtochess.domain.storyboard import ArrowRole, Glyph
+from gtochess.engine.reference import ReferenceEngine
+from gtochess.llm.board import MAX_LOSS_CP, BoardLimit, BoardSession, glyph_for
 
 
 def session(fen: str = chess.STARTING_FEN, **kwargs: int) -> BoardSession:

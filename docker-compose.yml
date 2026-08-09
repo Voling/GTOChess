@@ -1,4 +1,4 @@
-name: fiftymoves
+name: gtochess
 
 services:
   api:
@@ -11,13 +11,13 @@ services:
     # Silicon host emulates rather than failing at engine start.
     platform: linux/amd64
     ports:
-      # Host 8000 is commonly taken; override with FIFTYMOVES_API_PORT.
-      - "${FIFTYMOVES_API_PORT:-8010}:8000"
+      # Host 8000 is commonly taken; override with GTOCHESS_API_PORT.
+      - "${GTOCHESS_API_PORT:-8010}:8000"
     environment:
-      FIFTYMOVES_ENGINE_PATH: /opt/stockfish/stockfish
-      FIFTYMOVES_DATABASE_URL: postgresql+psycopg://fiftymoves:fiftymoves@postgres:5432/fiftymoves
-      FIFTYMOVES_REDIS_URL: redis://redis:6379/0
-      FIFTYMOVES_DATA_DIR: /data
+      GTOCHESS_ENGINE_PATH: /opt/stockfish/stockfish
+      GTOCHESS_DATABASE_URL: postgresql+psycopg://gtochess:gtochess@postgres:5432/gtochess
+      GTOCHESS_REDIS_URL: redis://redis:6379/0
+      GTOCHESS_DATA_DIR: /data
       # Unset falls back to the deterministic provider, so the API still answers.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
@@ -40,11 +40,11 @@ services:
         ENGINE_PLATFORM: linux-x86-64
     platform: linux/amd64
     command:
-      ["celery", "-A", "fiftymoves.jobs.app", "worker", "--loglevel=info", "--concurrency=2"]
+      ["celery", "-A", "gtochess.jobs.app", "worker", "--loglevel=info", "--concurrency=2"]
     environment:
-      FIFTYMOVES_ENGINE_PATH: /opt/stockfish/stockfish
-      FIFTYMOVES_REDIS_URL: redis://redis:6379/0
-      FIFTYMOVES_DATA_DIR: /data
+      GTOCHESS_ENGINE_PATH: /opt/stockfish/stockfish
+      GTOCHESS_REDIS_URL: redis://redis:6379/0
+      GTOCHESS_DATA_DIR: /data
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
       - ./backend/src:/app/src:ro
@@ -53,31 +53,20 @@ services:
       redis:
         condition: service_healthy
 
-  web:
-    build:
-      context: ./frontend
-      target: runtime
-    ports:
-      - "${FIFTYMOVES_WEB_PORT:-5173}:8080"
-    environment:
-      API_UPSTREAM: http://api:8000
-    depends_on:
-      - api
-
   postgres:
     # pgvector ships in the image; the graph and the similarity index live in
     # the same database, so there is no separate vector store to operate.
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: fiftymoves
-      POSTGRES_PASSWORD: fiftymoves
-      POSTGRES_DB: fiftymoves
+      POSTGRES_USER: gtochess
+      POSTGRES_PASSWORD: gtochess
+      POSTGRES_DB: gtochess
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fiftymoves -d fiftymoves"]
+      test: ["CMD-SHELL", "pg_isready -U gtochess -d gtochess"]
       interval: 5s
       timeout: 3s
       retries: 10

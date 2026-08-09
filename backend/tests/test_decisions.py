@@ -3,13 +3,13 @@ from __future__ import annotations
 import chess
 import pytest
 
-from fiftymoves.analysis.decisions import (
+from gtochess.analysis.decisions import (
     evaluate_choice,
     reply_count_after,
     targets_opponent_zone,
 )
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import EngineLine, EngineReport
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import EngineLine, EngineReport
 
 START = chess.Board()
 

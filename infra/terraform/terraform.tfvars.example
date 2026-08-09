@@ -1,10 +1,13 @@
 region      = "us-east-1"
-project     = "fiftymoves"
+project     = "gtochess"
 environment = "prod"
 
-# Leave both empty to serve on the CloudFront domain. Set them together: a
-# certificate cannot be validated without the zone that answers for the name.
-domain_name    = ""
+# Set them together: a certificate cannot be validated without the zone that
+# answers for the name. Leave both empty to serve on the CloudFront domain.
+# The zone id comes from:
+#   aws route53 list-hosted-zones-by-name --dns-name gtochess.com \
+#     --query 'HostedZones[0].Id' --output text
+domain_name    = "gtochess.com"
 hosted_zone_id = ""
 
 # The three settings that decide the standing bill. As shipped the stack idles
@@ -15,7 +18,6 @@ enable_database    = false
 use_fargate_spot   = true
 
 api_desired_count = 1
-web_desired_count = 1
 
 # Diversify. One instance type is one spot pool, and the first pool to tighten
 # takes the whole fleet with it.

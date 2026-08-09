@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { MoveAnnotation } from "../api";
-import { familyColor } from "../families";
+import { familyColor, FLAW_COLORS } from "../families";
 import type { PlacedNode, Placement, Trail } from "../layout";
 
 const props = defineProps<{
@@ -26,12 +26,6 @@ function scoreArc(placed: PlacedNode): number {
   const strength = Math.min(1, Math.abs(placed.node.score - EVEN) / 0.25);
   return 0.25 + 0.75 * strength;
 }
-
-const FLAW_COLORS: Record<string, string> = {
-  "??": "#e66767",
-  "?": "#d95926",
-  "?!": "#c98500",
-};
 
 function flagFor(placed: PlacedNode): MoveAnnotation | null {
   const found = props.annotations.get(placed.node.digest);

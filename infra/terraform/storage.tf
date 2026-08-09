@@ -7,15 +7,6 @@ resource "aws_ecr_repository" "backend" {
   }
 }
 
-resource "aws_ecr_repository" "web" {
-  name                 = "${local.name}-web"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-}
-
 resource "aws_ecr_lifecycle_policy" "backend" {
   repository = aws_ecr_repository.backend.name
   policy = jsonencode({
@@ -28,12 +19,54 @@ resource "aws_ecr_lifecycle_policy" "backend" {
   })
 }
 
-resource "aws_ecr_lifecycle_policy" "web" {
-  repository = aws_ecr_repository.web.name
-  policy     = aws_ecr_lifecycle_policy.backend.policy
+# The built frontend. Private: CloudFront reaches it through an origin access
+# control, and nothing else can.
+resource "aws_s3_bucket" "site" {
+  bucket = "${local.name}-site"
 }
 
-# The JSONL stores under FIFTYMOVES_DATA_DIR are read by the API and written by
+resource "aws_s3_bucket_public_access_block" "site" {
+  bucket                  = aws_s3_bucket.site.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "site" {
+  bucket = aws_s3_bucket.site.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+data "aws_iam_policy_document" "site" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.site.arn}/*"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.this.arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "site" {
+  bucket = aws_s3_bucket.site.id
+  policy = data.aws_iam_policy_document.site.json
+}
+
+# The JSONL stores under GTOCHESS_DATA_DIR are read by the API and written by
 # the workers, so they need one filesystem between them. This is the piece that
 # disappears once those stores move into Postgres.
 resource "aws_efs_file_system" "data" {
@@ -72,6 +105,61 @@ resource "aws_efs_access_point" "data" {
   }
 
   tags = { Name = "${local.name}-data" }
+}
+
+# The stores behind the Storage interface. On, they leave the shared filesystem
+# and EFS is only holding the games export; off, everything stays on EFS.
+resource "aws_s3_bucket" "data" {
+  count  = var.enable_object_storage ? 1 : 0
+  bucket = "${local.name}-data"
+}
+
+resource "aws_s3_bucket_public_access_block" "data" {
+  count                   = var.enable_object_storage ? 1 : 0
+  bucket                  = aws_s3_bucket.data[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
+  count  = var.enable_object_storage ? 1 : 0
+  bucket = aws_s3_bucket.data[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Every store is read whole and put whole, so a bad put is recoverable only if
+# the version before it survives.
+resource "aws_s3_bucket_versioning" "data" {
+  count  = var.enable_object_storage ? 1 : 0
+  bucket = aws_s3_bucket.data[0].id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "data" {
+  count      = var.enable_object_storage ? 1 : 0
+  bucket     = aws_s3_bucket.data[0].id
+  depends_on = [aws_s3_bucket_versioning.data]
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
 }
 
 resource "aws_db_subnet_group" "this" {

@@ -5,12 +5,12 @@ from typing import Any, cast
 
 import pytest
 
-from fiftymoves.config import Settings
-from fiftymoves.domain.games import GameRecord, GameSource
-from fiftymoves.domain.models import MATE_SCORE_CP, Variant
-from fiftymoves.ingest.parse import UnusableGame, parse_lichess_game
-from fiftymoves.ingest.pipeline import export_windows
-from fiftymoves.ingest.repertoire import build_decision_nodes, build_opening_records
+from gtochess.config import Settings
+from gtochess.domain.games import GameRecord, GameSource
+from gtochess.domain.models import MATE_SCORE_CP, Variant
+from gtochess.ingest.parse import UnusableGame, parse_lichess_game
+from gtochess.ingest.pipeline import export_windows
+from gtochess.ingest.repertoire import build_decision_nodes, build_opening_records
 
 ITALIAN = "e4 e5 Nf3 Nc6 Bc4 Bc5"
 

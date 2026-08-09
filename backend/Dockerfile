@@ -22,14 +22,14 @@ ARG ENGINE_PLATFORM
 WORKDIR /build
 
 COPY engine.lock.json ./
-COPY src/fiftymoves/__init__.py src/fiftymoves/layout.py ./src/fiftymoves/
-COPY src/fiftymoves/tools/__init__.py src/fiftymoves/tools/fetch_stockfish.py \
-     ./src/fiftymoves/tools/
+COPY src/gtochess/__init__.py src/gtochess/layout.py ./src/gtochess/
+COPY src/gtochess/tools/__init__.py src/gtochess/tools/fetch_stockfish.py \
+     ./src/gtochess/tools/
 
 ENV PYTHONPATH=/build/src
 # No --record: a lockfile without a committed checksum must fail the build
 # rather than silently trusting whatever the network returned.
-RUN python -m fiftymoves.tools.fetch_stockfish \
+RUN python -m gtochess.tools.fetch_stockfish \
         --platform "${ENGINE_PLATFORM}" \
         --lockfile /build/engine.lock.json \
         --dest /opt/stockfish \
@@ -48,7 +48,7 @@ ENV PATH="/opt/venv/bin:${PATH}"
 # Dependency layer: only invalidated by pyproject.toml, not by source edits.
 COPY pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    mkdir -p src/fiftymoves && touch src/fiftymoves/__init__.py \
+    mkdir -p src/gtochess && touch src/gtochess/__init__.py \
  && pip install --upgrade pip \
  && pip install .
 
@@ -68,7 +68,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 10001 fiftymoves
+RUN useradd --create-home --uid 10001 gtochess
 
 COPY --from=engine  /opt/stockfish /opt/stockfish
 COPY --from=python-build /opt/venv /opt/venv
@@ -76,16 +76,16 @@ COPY --from=python-build /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FIFTYMOVES_ENGINE_PATH=/opt/stockfish/stockfish
+    GTOCHESS_ENGINE_PATH=/opt/stockfish/stockfish
 
-USER fiftymoves
-WORKDIR /home/fiftymoves
+USER gtochess
+WORKDIR /home/gtochess
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"
 
-CMD ["uvicorn", "fiftymoves.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "gtochess.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
 # --------------------------------------------------------------------------
@@ -104,13 +104,13 @@ WORKDIR /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
-    FIFTYMOVES_ENGINE_PATH=/opt/stockfish/stockfish
+    GTOCHESS_ENGINE_PATH=/opt/stockfish/stockfish
 
 COPY pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    mkdir -p src/fiftymoves && touch src/fiftymoves/__init__.py \
+    mkdir -p src/gtochess && touch src/gtochess/__init__.py \
  && pip install --upgrade pip && pip install -e ".[dev]"
 
 COPY . .
 EXPOSE 8000
-CMD ["uvicorn", "fiftymoves.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "gtochess.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

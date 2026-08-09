@@ -13,12 +13,12 @@ from __future__ import annotations
 import chess
 import pytest
 
-from fiftymoves.analysis.fingerprint import fingerprint_from_pv, zone_of
-from fiftymoves.analysis.landscape import compute_landscape
-from fiftymoves.analysis.sensitivity import compute_sensitivity
-from fiftymoves.domain.identity import canonical_epd, chess960_board, position_key
-from fiftymoves.domain.models import KnowledgeAvailability, KnowledgeTier, Variant
-from fiftymoves.engine.reference import ReferenceEngine
+from gtochess.analysis.fingerprint import fingerprint_from_pv, zone_of
+from gtochess.analysis.landscape import compute_landscape
+from gtochess.analysis.sensitivity import compute_sensitivity
+from gtochess.domain.identity import canonical_epd, chess960_board, position_key
+from gtochess.domain.models import KnowledgeAvailability, KnowledgeTier, Variant
+from gtochess.engine.reference import ReferenceEngine
 
 # White mates in one with Ra8#. Black has a pawn on b2 one square from
 # promotion that is also attacking the mating rook -- maximally loud, entirely

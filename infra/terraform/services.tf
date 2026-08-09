@@ -1,6 +1,5 @@
 locals {
   backend_image = "${aws_ecr_repository.backend.repository_url}:${var.image_tag}"
-  web_image     = "${aws_ecr_repository.web.repository_url}:${var.image_tag}"
 
   data_volume = {
     name = "data"
@@ -14,21 +13,26 @@ locals {
     }
   }
 
-  common_environment = [
-    { name = "FIFTYMOVES_ENGINE_PATH", value = "/opt/stockfish/stockfish" },
-    { name = "FIFTYMOVES_DATA_DIR", value = "/data" },
-    { name = "FIFTYMOVES_REDIS_URL", value = "redis://${aws_elasticache_replication_group.this.primary_endpoint_address}:6379/0" },
-    { name = "FIFTYMOVES_ENGINE_HASH_MB", value = tostring(var.engine_hash_mb) },
-    { name = "FIFTYMOVES_COGNITO_USER_POOL_ID", value = aws_cognito_user_pool.this.id },
-    { name = "FIFTYMOVES_COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.this.id },
-    { name = "FIFTYMOVES_COGNITO_REGION", value = var.region },
-    { name = "FIFTYMOVES_AUTH_REQUIRED", value = "true" },
-  ]
+  common_environment = concat([
+    { name = "GTOCHESS_ENGINE_PATH", value = "/opt/stockfish/stockfish" },
+    { name = "GTOCHESS_DATA_DIR", value = "/data" },
+    { name = "GTOCHESS_REDIS_URL", value = "redis://${aws_elasticache_replication_group.this.primary_endpoint_address}:6379/0" },
+    { name = "GTOCHESS_ENGINE_HASH_MB", value = tostring(var.engine_hash_mb) },
+    { name = "GTOCHESS_COGNITO_USER_POOL_ID", value = aws_cognito_user_pool.this.id },
+    { name = "GTOCHESS_COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.this.id },
+    { name = "GTOCHESS_COGNITO_REGION", value = var.region },
+    { name = "GTOCHESS_AUTH_REQUIRED", value = "true" },
+    ],
+    # Set, the stores go to S3 and DATA_DIR above is only the games export.
+    var.enable_object_storage
+    ? [{ name = "GTOCHESS_S3_BUCKET", value = aws_s3_bucket.data[0].bucket }]
+    : [],
+  )
 
   common_secrets = concat(
     [{ name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic.arn }],
     var.enable_database
-    ? [{ name = "FIFTYMOVES_DATABASE_URL", valueFrom = aws_secretsmanager_secret.database[0].arn }]
+    ? [{ name = "GTOCHESS_DATABASE_URL", valueFrom = aws_secretsmanager_secret.database[0].arn }]
     : [],
   )
 
@@ -67,7 +71,7 @@ resource "aws_ecs_task_definition" "api" {
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     mountPoints  = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
     command = [
-      "uvicorn", "fiftymoves.api.main:app",
+      "uvicorn", "gtochess.api.main:app",
       "--host", "0.0.0.0", "--port", "8000",
     ]
     healthCheck = {
@@ -83,31 +87,6 @@ resource "aws_ecs_task_definition" "api" {
         "awslogs-group"         = aws_cloudwatch_log_group.this.name
         "awslogs-region"        = var.region
         "awslogs-stream-prefix" = "api"
-      }
-    }
-  }])
-}
-
-resource "aws_ecs_task_definition" "web" {
-  family                   = "${local.name}-web"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.web_cpu
-  memory                   = var.web_memory
-  execution_role_arn       = aws_iam_role.execution.arn
-
-  container_definitions = jsonencode([{
-    name         = "web"
-    image        = local.web_image
-    essential    = true
-    environment  = [{ name = "API_UPSTREAM", value = "http://${aws_lb.this.dns_name}" }]
-    portMappings = [{ containerPort = 8080, protocol = "tcp" }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.this.name
-        "awslogs-region"        = var.region
-        "awslogs-stream-prefix" = "web"
       }
     }
   }])
@@ -149,7 +128,7 @@ resource "aws_ecs_task_definition" "worker" {
     secrets     = local.common_secrets
     mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
     command = [
-      "celery", "-A", "fiftymoves.jobs.app", "worker",
+      "celery", "-A", "gtochess.jobs.app", "worker",
       "-Q", "default", "--loglevel=info", "--concurrency=2",
     ]
     logConfiguration = {
@@ -194,7 +173,7 @@ resource "aws_ecs_task_definition" "measure" {
     secrets     = local.common_secrets
     mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
     command = [
-      "celery", "-A", "fiftymoves.jobs.app", "worker",
+      "celery", "-A", "gtochess.jobs.app", "worker",
       "-Q", "measure", "--pool=solo", "--loglevel=info",
     ]
     logConfiguration = {
@@ -229,32 +208,6 @@ resource "aws_ecs_service" "api" {
     target_group_arn = aws_lb_target_group.api.arn
     container_name   = "api"
     container_port   = 8000
-  }
-
-  depends_on = [aws_lb_listener.http]
-}
-
-resource "aws_ecs_service" "web" {
-  name            = "${local.name}-web"
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = var.web_desired_count
-
-  capacity_provider_strategy {
-    capacity_provider = local.fargate_strategy
-    weight            = 1
-  }
-
-  network_configuration {
-    subnets          = local.egress_subnets
-    security_groups  = [aws_security_group.tasks.id]
-    assign_public_ip = local.public_task_ip == "ENABLED"
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.web.arn
-    container_name   = "web"
-    container_port   = 8080
   }
 
   depends_on = [aws_lb_listener.http]
@@ -312,26 +265,3 @@ resource "aws_appautoscaling_policy" "api_cpu" {
   }
 }
 
-resource "aws_appautoscaling_target" "web" {
-  service_namespace  = "ecs"
-  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.web.name}"
-  scalable_dimension = "ecs:service:DesiredCount"
-  min_capacity       = var.web_desired_count
-  max_capacity       = 6
-}
-
-resource "aws_appautoscaling_policy" "web_cpu" {
-  name               = "${local.name}-web-cpu"
-  policy_type        = "TargetTrackingScaling"
-  service_namespace  = aws_appautoscaling_target.web.service_namespace
-  resource_id        = aws_appautoscaling_target.web.resource_id
-  scalable_dimension = aws_appautoscaling_target.web.scalable_dimension
-
-  target_tracking_scaling_policy_configuration {
-    target_value = 60
-
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-  }
-}

@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import json
+import time
+from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from gtochess.config import Settings, get_settings
+from gtochess.domain.games import GameRecord
+from gtochess.ingest.lichess import LichessClient
+from gtochess.ingest.parse import UnusableGame, parse_lichess_game
+from gtochess.ingest.repertoire import build_decision_nodes
+from gtochess.storage import Storage, as_storage
+
+
+def games_name(username: str) -> str:
+    return f"{username}.games.jsonl"
+
+
+def nodes_name(username: str) -> str:
+    return f"{username}.nodes.jsonl"
+
+
+class IngestProgress(BaseModel):
+    username: str
+    exported: int
+    usable: int
+    skipped: int
+    limit: int | None
+    rate: float
+    eta_seconds: float | None
+
+    @property
+    def percent(self) -> float | None:
+        if not self.limit:
+            return None
+        return min(100.0, self.exported / self.limit * 100)
+
+
+class IngestResult(BaseModel):
+    username: str
+    exported: int
+    usable: int
+    skipped: dict[str, int]
+    speeds: dict[str, int]
+    as_white: int
+    score: float
+    decision_positions: int
+    games_path: str | None
+    nodes_path: str | None
+    seconds: float
+    authenticated: bool
+
+
+ProgressHook = Callable[[IngestProgress], None]
+
+WINDOW_GAMES = 10_000
+
+
+def export_windows(
+    client: LichessClient,
+    username: str,
+    *,
+    limit: int | None,
+    rated: bool | None,
+    perf_types: Sequence[str],
+    window: int = WINDOW_GAMES,
+) -> Iterator[dict[str, Any]]:
+    """Walk the whole history in date windows.
+
+    A single lichess export stops near ten thousand games however high ``max``
+    is set, so asking once silently returns only the most recent slice. Each
+    window restarts from the oldest game the last one yielded. Ids are tracked
+    because ``until`` is inclusive, so consecutive windows overlap by a game.
+    """
+    seen: set[str] = set()
+    until: int | None = None
+    remaining = limit
+
+    while remaining is None or remaining > 0:
+        want = window if remaining is None else min(window, remaining + 1)
+        oldest: int | None = None
+        fresh = 0
+
+        for raw in client.export_user_games(
+            username, until_ms=until, max_games=want, rated=rated, perf_types=perf_types
+        ):
+            created = raw.get("createdAt")
+            if isinstance(created, int) and (oldest is None or created < oldest):
+                oldest = created
+            game_id = raw.get("id")
+            if isinstance(game_id, str):
+                if game_id in seen:
+                    continue
+                seen.add(game_id)
+            fresh += 1
+            yield raw
+            if remaining is not None:
+                remaining -= 1
+                if remaining <= 0:
+                    return
+
+        if not fresh or oldest is None:
+            return
+        until = oldest
+
+
+def ingest_player(
+    username: str,
+    *,
+    settings: Settings | None = None,
+    max_games: int | None = None,
+    out_dir: Storage | Path | None = None,
+    on_progress: ProgressHook | None = None,
+    report_every: int = 500,
+) -> IngestResult:
+    settings = settings or get_settings()
+    games: list[GameRecord] = []
+    skipped: Counter[str] = Counter()
+
+    store: Storage | None = as_storage(out_dir) if out_dir else None
+    limit = max_games if max_games is not None else settings.ingest_max_games
+    started = time.monotonic()
+    exported = 0
+    authenticated = False
+
+    with ExitStack() as stack:
+        client = stack.enter_context(LichessClient.from_settings(settings))
+        authenticated = client.authenticated
+        # Written as games arrive so a long export survives an interruption on a
+        # filesystem. Object storage cannot append, so there the writer buffers
+        # the run and puts once at the end.
+        handle = stack.enter_context(store.writer(games_name(username))) if store else None
+
+        stream = export_windows(
+            client,
+            username,
+            limit=limit,
+            rated=settings.ingest_rated_only or None,
+            perf_types=settings.perf_type_list(),
+        )
+        for exported, raw in enumerate(stream, start=1):
+            try:
+                game = parse_lichess_game(raw, username)
+            except UnusableGame as exc:
+                skipped[str(exc)] += 1
+            else:
+                games.append(game)
+                if handle is not None:
+                    handle.write(game.model_dump_json() + "\n")
+
+            if exported % report_every == 0:
+                if handle is not None:
+                    handle.flush()
+                if on_progress is not None:
+                    on_progress(_progress(username, exported, games, skipped, limit, started))
+
+    elapsed = time.monotonic() - started
+    if on_progress is not None:
+        on_progress(_progress(username, exported, games, skipped, limit, started))
+
+    written_nodes: str | None = None
+    decision_positions = 0
+    if games:
+        nodes = build_decision_nodes(games, max_ply=settings.ingest_max_ply)
+        decision_positions = len(nodes)
+        if store is not None:
+            written_nodes = nodes_name(username)
+            with store.writer(written_nodes) as sink:
+                for node in nodes:
+                    sink.write(json.dumps(node.model_dump(mode="json")) + "\n")
+
+    return IngestResult(
+        username=username,
+        exported=exported,
+        usable=len(games),
+        skipped=dict(skipped),
+        speeds=dict(Counter(g.speed for g in games).most_common()),
+        as_white=sum(1 for g in games if g.player_is_white),
+        score=round(sum(g.score for g in games) / len(games), 4) if games else 0.0,
+        decision_positions=decision_positions,
+        games_path=games_name(username) if store else None,
+        nodes_path=written_nodes,
+        seconds=round(elapsed, 1),
+        authenticated=authenticated,
+    )
+
+
+def load_player_games(username: str, target: Storage | Path) -> tuple[list[GameRecord], int]:
+    store = as_storage(target)
+    name = games_name(username)
+    if not store.exists(name):
+        return [], 0
+    games = [GameRecord(**json.loads(line)) for line in store.lines(name)]
+    return games, store.stamp(name)
+
+
+def _progress(
+    username: str,
+    exported: int,
+    games: list[GameRecord],
+    skipped: Counter[str],
+    limit: int | None,
+    started: float,
+) -> IngestProgress:
+    elapsed = time.monotonic() - started
+    rate = exported / elapsed if elapsed else 0.0
+    remaining = (limit - exported) / rate if rate and limit else None
+    return IngestProgress(
+        username=username,
+        exported=exported,
+        usable=len(games),
+        skipped=sum(skipped.values()),
+        limit=limit,
+        rate=round(rate, 1),
+        eta_seconds=round(remaining, 0) if remaining is not None else None,
+    )

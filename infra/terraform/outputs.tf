@@ -6,12 +6,18 @@ output "load_balancer_dns" {
   value = aws_lb.this.dns_name
 }
 
+# The deploy workflow invalidates the edge after a frontend rollout, so this is
+# the one output CI needs that is not an ECR or ECS name.
+output "cloudfront_distribution_id" {
+  value = aws_cloudfront_distribution.this.id
+}
+
 output "ecr_backend" {
   value = aws_ecr_repository.backend.repository_url
 }
 
-output "ecr_web" {
-  value = aws_ecr_repository.web.repository_url
+output "site_bucket" {
+  value = aws_s3_bucket.site.bucket
 }
 
 output "cognito_user_pool_id" {

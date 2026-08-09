@@ -5,22 +5,6 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
 }
 
-resource "aws_lb_target_group" "web" {
-  name        = "${local.name}-web"
-  port        = 8080
-  protocol    = "HTTP"
-  target_type = "ip"
-  vpc_id      = aws_vpc.this.id
-
-  health_check {
-    path                = "/"
-    matcher             = "200-399"
-    interval            = 30
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-  }
-}
-
 resource "aws_lb_target_group" "api" {
   name        = "${local.name}-api"
   port        = 8000
@@ -41,6 +25,8 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
+# The API is all this carries. The site is static and served from S3 by
+# CloudFront, so nothing reaches the load balancer to be routed.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.this.arn
   port              = 80
@@ -48,22 +34,6 @@ resource "aws_lb_listener" "http" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.web.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "api" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 10
-
-  action {
-    type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
-  }
-
-  condition {
-    path_pattern {
-      values = ["/api/*", "/health"]
-    }
   }
 }

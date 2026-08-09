@@ -21,6 +21,7 @@ import {
   type GraphQuery,
   type ImportJob,
   type MoveAnnotation,
+  type OpeningName,
   type OpeningPhase,
   type RepertoireGraph,
   type Side,
@@ -31,6 +32,7 @@ import AccountPanel from "./components/AccountPanel.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import AnalysisPane from "./components/AnalysisPane.vue";
+import MistakeTable, { type Mistake } from "./components/MistakeTable.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
 import Segmented from "./components/Segmented.vue";
 import Stepper from "./components/Stepper.vue";
@@ -75,6 +77,8 @@ const importJob = ref<ImportJob | null>(null);
 
 const annotations = ref<Map<string, MoveAnnotation>>(new Map());
 const annotationNote = ref<string | null>(null);
+const measuredMoves = ref(0);
+const mistakesOpen = ref(false);
 
 const explanation = ref<Explanation | null>(null);
 const explaining = ref(false);
@@ -404,14 +408,49 @@ async function loadAnnotations() {
   try {
     const response = await fetchMoveLosses(query.value);
     annotations.value = new Map(response.marks.map((m) => [m.child, m]));
+    measuredMoves.value = response.measured_moves;
     annotationNote.value = response.measured_moves
       ? `${response.flagged} flagged of ${response.measured_moves} moves measured`
       : null;
   } catch {
     annotations.value = new Map();
+    measuredMoves.value = 0;
     annotationNote.value = null;
   }
 }
+
+// The graph marks a flaw where it sits. This is the same set read end to end,
+// so a habit spread thinly over a repertoire is still visible.
+const mistakes = computed<Mistake[]>(() => {
+  const place = placement.value;
+  const held = graph.value;
+  // The position after the move carries the more specific name, and a node only
+  // takes one past the ply its opening becomes identifiable, so this falls back
+  // up the line rather than leaving a row unlabelled.
+  const nameFor = (digest: string | undefined): OpeningName | null => {
+    if (!held || !digest) return null;
+    const index = place?.byDigest.get(digest)?.node.opening;
+    if (index === null || index === undefined) return null;
+    return held.openings[index] ?? null;
+  };
+
+  return [...annotations.value.values()]
+    .filter((mark) => mark.quality !== "sound")
+    .map((mark) => {
+      const placed = place?.byDigest.get(mark.child) ?? null;
+      const path = placed?.node.san_path ?? [];
+      const opening = nameFor(mark.child) ?? nameFor(mark.parent);
+      const family = placed?.node.family ?? null;
+      return {
+        mark,
+        move: placed ? Math.ceil(placed.depth / 2) : null,
+        line: path.length ? path.join(" ") : mark.san,
+        opening,
+        family,
+        familyName: held?.families.find((f) => f.key === family)?.name ?? null,
+      };
+    });
+});
 
 const phase = ref<OpeningPhase | null>(null);
 
@@ -565,7 +604,7 @@ onBeforeUnmount(() => {
 
     <section class="controls material">
       <header>
-        <h1>FiftyMoves</h1>
+        <h1>GTO Chess</h1>
         <span class="spinner" :class="{ on: loading }" aria-hidden="true" />
       </header>
       <p class="tagline">Every line {{ username }} actually plays.</p>
@@ -619,7 +658,17 @@ onBeforeUnmount(() => {
           within {{ (phase.band_cp / 100).toFixed(2) }}, across
           {{ phase.moves_scored }} moves
         </p>
-        <p v-if="annotationNote" class="note">{{ annotationNote }}</p>
+        <button
+          v-if="annotationNote"
+          type="button"
+          class="note flaws"
+          :class="{ on: mistakesOpen }"
+          :disabled="mistakes.length === 0"
+          @click="mistakesOpen = !mistakesOpen"
+        >
+          {{ annotationNote }}
+          <span v-if="mistakes.length" aria-hidden="true">&rsaquo;</span>
+        </button>
       </div>
 
       <p class="hint">
@@ -690,6 +739,19 @@ onBeforeUnmount(() => {
       />
     </Transition>
 
+    <Transition name="rise">
+      <MistakeTable
+        v-if="mistakesOpen && mistakes.length > 0 && !empty"
+        :mistakes="mistakes"
+        :measured="measuredMoves"
+        :pinned="pinned"
+        :slots="slots"
+        class="mistakes-slot"
+        @select="select"
+        @close="mistakesOpen = false"
+      />
+    </Transition>
+
     <FamilyLegend
       v-if="graph && graph.families.length > 0 && !empty"
       :families="graph.families"
@@ -704,7 +766,7 @@ onBeforeUnmount(() => {
       <span class="eyebrow">Not imported yet</span>
       <p>Import {{ username }}'s games from lichess, then load again.</p>
       <code class="num"
-        >python -m fiftymoves.tools.ingest_lichess {{ username }} --out
+        >python -m gtochess.tools.ingest_lichess {{ username }} --out
         data</code
       >
     </div>
@@ -848,6 +910,13 @@ input:focus {
   left: 16px;
   bottom: 16px;
 }
+/* Clears the legend on the left and leaves the inspector's column free, so a
+   row click has somewhere to land. */
+.mistakes-slot {
+  position: absolute;
+  left: 336px;
+  bottom: 16px;
+}
 .analysis-slot {
   position: absolute;
   top: 16px;
@@ -876,6 +945,26 @@ input:focus {
   font-size: 10.5px;
   line-height: 1.45;
   color: var(--faint);
+}
+.flaws {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 5px;
+  margin-left: -5px;
+  border-radius: 5px;
+  text-align: left;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.flaws:not(:disabled):hover,
+.flaws.on {
+  background: var(--raised);
+  color: var(--text);
+}
+.flaws:disabled {
+  cursor: default;
 }
 .hint {
   margin: 3px 0 0;
@@ -953,6 +1042,12 @@ input:focus {
   }
   .legend {
     display: none;
+  }
+  .mistakes-slot {
+    position: static;
+    order: 4;
+    width: auto;
+    max-height: none;
   }
   .notice {
     position: static;

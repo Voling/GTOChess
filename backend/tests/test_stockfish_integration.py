@@ -15,12 +15,12 @@ from collections.abc import Iterator
 import chess
 import pytest
 
-from fiftymoves.analysis.fingerprint import fingerprint_from_line
-from fiftymoves.analysis.landscape import compute_landscape
-from fiftymoves.analysis.sensitivity import compute_sensitivity
-from fiftymoves.config import Settings
-from fiftymoves.domain.models import Variant
-from fiftymoves.engine.stockfish import StockfishEngine
+from gtochess.analysis.fingerprint import fingerprint_from_line
+from gtochess.analysis.landscape import compute_landscape
+from gtochess.analysis.sensitivity import compute_sensitivity
+from gtochess.config import Settings
+from gtochess.domain.models import Variant
+from gtochess.engine.stockfish import StockfishEngine
 
 pytestmark = pytest.mark.needs_engine
 
@@ -85,7 +85,7 @@ class TestChess960OverUci:
 
     @pytest.mark.parametrize("scharnagl_id", [0, 356, 959])
     def test_analyses_960_start_positions(self, engine: StockfishEngine, scharnagl_id: int) -> None:
-        from fiftymoves.domain.identity import chess960_board
+        from gtochess.domain.identity import chess960_board
 
         board = chess960_board(scharnagl_id)
         report = engine.analyse(board, depth=8, multipv=3)
@@ -96,7 +96,7 @@ class TestChess960OverUci:
     def test_switching_between_variants_on_one_engine(self, engine: StockfishEngine) -> None:
         """The same process must serve both variants -- workers are pooled and do
         not get a fresh engine per position."""
-        from fiftymoves.domain.identity import chess960_board
+        from gtochess.domain.identity import chess960_board
 
         standard = engine.analyse(chess.Board(), depth=8, multipv=2)
         castling = chess960_board(356)
@@ -108,7 +108,7 @@ class TestChess960OverUci:
         assert again.best.move_uci
 
     def test_plan_fingerprint_works_without_any_theory(self, engine: StockfishEngine) -> None:
-        from fiftymoves.domain.identity import chess960_board
+        from gtochess.domain.identity import chess960_board
 
         board = chess960_board(959)
         report = engine.analyse(board, depth=8, multipv=1)

@@ -59,7 +59,7 @@ const eta = computed(() => {
         </a>
         <p class="note">
           Opens lichess in a new tab. Approve there and you will land back here signed in.
-          FiftyMoves never sees your password.
+          GTO Chess never sees your password.
         </p>
       </template>
       <button v-else type="button" class="primary" :disabled="busy" @click="emit('connect')">

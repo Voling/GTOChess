@@ -1,5 +1,5 @@
 [project]
-name = "fiftymoves"
+name = "gtochess"
 version = "0.1.0"
 description = "Opening-tree knowledge graph and assessment engine for lichess.org and chess.com"
 requires-python = ">=3.12"
@@ -25,9 +25,10 @@ dependencies = [
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
 
 [project.scripts]
-fiftymoves-fetch-engine = "fiftymoves.tools.fetch_stockfish:main"
-fiftymoves-import = "fiftymoves.tools.ingest_lichess:main"
-fiftymoves-measure = "fiftymoves.tools.measure_losses:main"
+gtochess-fetch-engine = "gtochess.tools.fetch_stockfish:main"
+gtochess-import = "gtochess.tools.ingest_lichess:main"
+gtochess-measure = "gtochess.tools.measure_losses:main"
+gtochess-annotate = "gtochess.tools.annotate:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -36,7 +37,7 @@ build-backend = "hatchling.build"
 # The wheel is pure Python. Stockfish is a build input, fetched by the Docker
 # engine stage from engine.lock.json -- it is neither committed nor packaged.
 [tool.hatch.build.targets.wheel]
-packages = ["src/fiftymoves"]
+packages = ["src/gtochess"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -61,5 +62,5 @@ module = "celery.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "fiftymoves.jobs.*"
+module = "gtochess.jobs.*"
 disallow_untyped_decorators = false

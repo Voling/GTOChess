@@ -1,4 +1,4 @@
-# FiftyMoves — Implementation Plan
+# GTO Chess — Implementation Plan
 
 ## 1. Scope
 
@@ -106,9 +106,9 @@ links, outgoing links, and neighbour links.
 hover a node for a preview popover, click to open. Node size scales with inbound
 link count, so important notes are visibly bigger.
 
-### 4.2 How it maps onto FiftyMoves
+### 4.2 How it maps onto GTO Chess
 
-| Obsidian | FiftyMoves |
+| Obsidian | GTO Chess |
 |---|---|
 | Local graph, depth 1–5 | **Repertoire DAG around the current position**, depth = plies. Default 2–3. This *is* the primary navigation surface. |
 | Global graph | **Concept graph** — structures, plans, motifs. Force-directed, opt-in. |

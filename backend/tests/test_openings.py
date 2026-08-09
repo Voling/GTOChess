@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fiftymoves.analysis.openings import (
+from gtochess.analysis.openings import (
     build_families,
     dominant,
     family_key,
     family_name,
     forcing_share,
 )
-from fiftymoves.domain.games import GameRecord, GameSource
-from fiftymoves.domain.models import Variant
+from gtochess.domain.games import GameRecord, GameSource
+from gtochess.domain.models import Variant
 
 
 def game(game_id: str, *, moves: str = "e4 e6 d4 d5", **overrides: Any) -> GameRecord:

@@ -80,11 +80,40 @@ resource "aws_cloudfront_cache_policy" "api" {
   }
 }
 
+resource "aws_cloudfront_origin_access_control" "site" {
+  name                              = "${local.name}-site"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# The router. A deep link is a path with no object behind it, so it has to
+# resolve to the document that boots the app. One millisecond at the edge, which
+# is the whole reason this is a function and not Lambda@Edge.
+resource "aws_cloudfront_function" "spa" {
+  name    = "${local.name}-spa"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+      if (uri.endsWith("/")) {
+        request.uri = uri + "index.html";
+      } else if (!uri.split("/").pop().includes(".")) {
+        request.uri = "/index.html";
+      }
+      return request;
+    }
+  EOT
+}
+
 resource "aws_cloudfront_distribution" "this" {
-  enabled         = true
-  is_ipv6_enabled = true
-  comment         = local.name
-  aliases         = local.custom_domain ? [var.domain_name] : []
+  enabled             = true
+  is_ipv6_enabled     = true
+  comment             = local.name
+  aliases             = local.custom_domain ? [var.domain_name] : []
+  default_root_object = "index.html"
 
   origin {
     domain_name = aws_lb.this.dns_name
@@ -98,14 +127,25 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
+  origin {
+    domain_name              = aws_s3_bucket.site.bucket_regional_domain_name
+    origin_id                = "site"
+    origin_access_control_id = aws_cloudfront_origin_access_control.site.id
+  }
+
   default_cache_behavior {
-    target_origin_id       = "alb"
+    target_origin_id       = "site"
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
-    # CachingOptimized
+    # CachingOptimized. Vite content hashes every asset, so they cache hard.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
     compress        = true
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa.arn
+    }
   }
 
   # Analysis is per position and per player, and the paid endpoints are POSTs
@@ -116,6 +156,18 @@ resource "aws_cloudfront_distribution" "this" {
     target_origin_id       = "alb"
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    cache_policy_id        = aws_cloudfront_cache_policy.api.id
+    compress               = true
+  }
+
+  # Kept reachable from the edge so a deploy can be checked from outside the VPC.
+  # The target group checks the task directly and does not come through here.
+  ordered_cache_behavior {
+    path_pattern           = "/health"
+    target_origin_id       = "alb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = aws_cloudfront_cache_policy.api.id
     compress               = true
@@ -135,11 +187,14 @@ resource "aws_cloudfront_distribution" "this" {
   }
 }
 
+# A and AAAA both, because the distribution answers on IPv6 and an A record
+# alone makes an IPv6 client wait for the fallback.
 resource "aws_route53_record" "root" {
-  count   = local.custom_domain ? 1 : 0
+  for_each = local.custom_domain ? toset(["A", "AAAA"]) : toset([])
+
   zone_id = var.hosted_zone_id
   name    = var.domain_name
-  type    = "A"
+  type    = each.value
 
   alias {
     name                   = aws_cloudfront_distribution.this.domain_name

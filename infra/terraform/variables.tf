@@ -1,6 +1,6 @@
 variable "project" {
   type    = string
-  default = "fiftymoves"
+  default = "gtochess"
 }
 
 variable "environment" {
@@ -53,16 +53,6 @@ variable "api_memory" {
   default = 2048
 }
 
-variable "web_cpu" {
-  type    = number
-  default = 256
-}
-
-variable "web_memory" {
-  type    = number
-  default = 512
-}
-
 variable "worker_cpu" {
   type        = number
   default     = 4096
@@ -104,6 +94,13 @@ variable "enable_database" {
   default = false
 }
 
+# Puts the stores in S3 rather than on EFS. Cheaper, and it removes the reason
+# the API and the workers have to share a filesystem at all.
+variable "enable_object_storage" {
+  type    = bool
+  default = false
+}
+
 # Spot is about 70% off and can be reclaimed on two minutes notice. At one task
 # per service that means the odd gap while a replacement starts.
 variable "use_fargate_spot" {
@@ -112,11 +109,6 @@ variable "use_fargate_spot" {
 }
 
 variable "api_desired_count" {
-  type    = number
-  default = 1
-}
-
-variable "web_desired_count" {
   type    = number
   default = 1
 }

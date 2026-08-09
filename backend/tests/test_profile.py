@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.profile import DECISION_TRAITS, build_profile
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.profile import MoveDecision, Trait, TraitUnit
+from gtochess.analysis.profile import DECISION_TRAITS, build_profile
+from gtochess.domain.identity import position_key
+from gtochess.domain.profile import MoveDecision, Trait, TraitUnit
 
 KEY = position_key(chess.Board())
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.book import book_depth, measure_losses, score_openings
-from fiftymoves.domain.book import MoveAccuracy, PositionLosses
-from fiftymoves.domain.games import Side
-from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
-from fiftymoves.domain.models import Variant
-from fiftymoves.engine.reference import ReferenceEngine
+from gtochess.analysis.book import book_depth, measure_losses, score_openings
+from gtochess.domain.book import MoveAccuracy, PositionLosses
+from gtochess.domain.games import Side
+from gtochess.domain.graph import GraphEdge, GraphNode, RepertoireGraph
+from gtochess.domain.models import Variant
+from gtochess.engine.reference import ReferenceEngine
 
 
 def node(digest: str, ply: int, family: str, games: int) -> GraphNode:

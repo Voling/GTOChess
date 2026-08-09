@@ -52,7 +52,7 @@ jobs:
           key: stockfish-${{ hashFiles('backend/engine.lock.json') }}-${{ runner.os }}
       - name: Provision pinned Stockfish
         # No --record: CI must fail if the lockfile has no committed checksum.
-        run: python -m fiftymoves.tools.fetch_stockfish
+        run: python -m gtochess.tools.fetch_stockfish
       - run: pytest -q -m needs_engine
 
   # Pure-Python wheel. The engine is deliberately absent from the artifact --
@@ -90,7 +90,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: fiftymoves-wheel
+          name: gtochess-wheel
           path: backend/dist/*.whl
 
   # Image build. The engine stage fetches and checksum-verifies Stockfish, so a
@@ -109,16 +109,16 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
-          tags: fiftymoves:ci
+          tags: gtochess:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Verify the image carries a working engine
         run: |
-          docker run --rm fiftymoves:ci \
-            python -c "from fiftymoves.config import get_settings; print(get_settings().resolve_engine_path())"
+          docker run --rm gtochess:ci \
+            python -c "from gtochess.config import get_settings; print(get_settings().resolve_engine_path())"
       - name: Verify the API starts and reports the engine
         run: |
-          docker run -d --name fm -p 8000:8000 fiftymoves:ci
+          docker run -d --name fm -p 8000:8000 gtochess:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health > /tmp/health.json; then break; fi
             sleep 2

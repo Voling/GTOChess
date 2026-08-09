@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.annotations import annotate_graph, annotate_position, classify
-from fiftymoves.domain.annotations import MoveQuality
-from fiftymoves.domain.games import Side
-from fiftymoves.domain.graph import GraphEdge, GraphNode, RepertoireGraph
-from fiftymoves.domain.identity import position_key
-from fiftymoves.domain.models import EngineLine, EngineReport, Variant
-from fiftymoves.engine.reference import ReferenceEngine
+from gtochess.analysis.annotations import annotate_graph, annotate_position, classify
+from gtochess.domain.annotations import MoveQuality
+from gtochess.domain.games import Side
+from gtochess.domain.graph import GraphEdge, GraphNode, RepertoireGraph
+from gtochess.domain.identity import position_key
+from gtochess.domain.models import EngineLine, EngineReport, Variant
+from gtochess.engine.reference import ReferenceEngine
 
 
 def line(rank: int, san: str, uci: str, score_cp: int) -> EngineLine:

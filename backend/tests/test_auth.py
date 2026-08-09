@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from fiftymoves.api.auth import AuthError, SpendLimiter, _principal, bearer_token
-from fiftymoves.config import Settings
+from gtochess.api.auth import AuthError, SpendLimiter, _principal, bearer_token
+from gtochess.config import Settings
 
 POOL = "us-east-1_abc123"
 CLIENT = "6a1clientid"
@@ -110,7 +110,7 @@ class TestSpendLimiter:
 
 class TestConfiguration:
     def test_an_unconfigured_pool_trusts_no_token(self) -> None:
-        from fiftymoves.api.auth import verify_token
+        from gtochess.api.auth import verify_token
 
         with pytest.raises(AuthError, match="no user pool"):
             verify_token("anything", settings=Settings(cognito_user_pool_id=None))

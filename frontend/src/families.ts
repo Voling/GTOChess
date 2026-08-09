@@ -8,6 +8,14 @@ export const SAFE_SLOTS = 3;
 export const MAX_PICKS = SLOT_COLORS.length;
 export const NEUTRAL = "#6f6f74";
 
+// Warmer as the loss grows, and never a family colour, so a flaw never reads as
+// an opening.
+export const FLAW_COLORS: Record<string, string> = {
+  "??": "#e66767",
+  "?": "#d95926",
+  "?!": "#c98500",
+};
+
 export function defaultPicks(graph: RepertoireGraph): string[] {
   return graph.families
     .filter((f) => f.slot >= 0 && f.slot < SAFE_SLOTS)

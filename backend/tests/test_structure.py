@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import chess
 
-from fiftymoves.analysis.structure import compute_structure
+from gtochess.analysis.structure import compute_structure
 
 STARTING = chess.STARTING_FEN
 # 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Bxc6 dxc6, the Exchange Ruy: Black's queenside is
