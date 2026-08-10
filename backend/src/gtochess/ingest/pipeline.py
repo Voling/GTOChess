@@ -18,12 +18,23 @@ from gtochess.ingest.repertoire import build_decision_nodes
 from gtochess.storage import Storage, as_storage
 
 
+def player_key(username: str) -> str:
+    """The spelling a player's data is filed under.
+
+    Lichess names are case preserving but case insensitive, and so is the
+    ownership check. Without normalising here, "Dylanette" and "dylanette" both
+    authorise and then read two different objects, so the second spelling 404s
+    and an import re-downloads the whole history into a second copy.
+    """
+    return username.strip().lower()
+
+
 def games_name(username: str) -> str:
-    return f"{username}.games.jsonl"
+    return f"{player_key(username)}.games.jsonl"
 
 
 def nodes_name(username: str) -> str:
-    return f"{username}.nodes.jsonl"
+    return f"{player_key(username)}.nodes.jsonl"
 
 
 class IngestProgress(BaseModel):
@@ -116,6 +127,7 @@ def ingest_player(
     settings: Settings | None = None,
     max_games: int | None = None,
     out_dir: Storage | Path | None = None,
+    token: str | None = None,
     on_progress: ProgressHook | None = None,
     report_every: int = 500,
 ) -> IngestResult:
@@ -130,7 +142,7 @@ def ingest_player(
     authenticated = False
 
     with ExitStack() as stack:
-        client = stack.enter_context(LichessClient.from_settings(settings))
+        client = stack.enter_context(LichessClient.from_settings(settings, token=token))
         authenticated = client.authenticated
         # Written as games arrive so a long export survives an interruption on a
         # filesystem. Object storage cannot append, so there the writer buffers

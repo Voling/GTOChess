@@ -1,17 +1,9 @@
 locals {
   backend_image = "${aws_ecr_repository.backend.repository_url}:${var.image_tag}"
 
-  data_volume = {
-    name = "data"
-    efs_volume_configuration = {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
-      authorization_config = {
-        access_point_id = aws_efs_access_point.data.id
-        iam             = "ENABLED"
-      }
-    }
-  }
+  data_mounts = local.uses_efs ? [
+    { sourceVolume = "data", containerPath = "/data", readOnly = false }
+  ] : []
 
   common_environment = concat([
     { name = "GTOCHESS_ENGINE_PATH", value = "/opt/stockfish/stockfish" },
@@ -49,16 +41,19 @@ resource "aws_ecs_task_definition" "api" {
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
-  volume {
-    name = local.data_volume.name
+  dynamic "volume" {
+    for_each = local.uses_efs ? [1] : []
+    content {
+      name = "data"
 
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.data[0].id
+        transit_encryption = "ENABLED"
 
-      authorization_config {
-        access_point_id = aws_efs_access_point.data.id
-        iam             = "ENABLED"
+        authorization_config {
+          access_point_id = aws_efs_access_point.data[0].id
+          iam             = "ENABLED"
+        }
       }
     }
   }
@@ -70,7 +65,7 @@ resource "aws_ecs_task_definition" "api" {
     environment  = local.common_environment
     secrets      = local.common_secrets
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-    mountPoints  = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
+    mountPoints  = local.data_mounts
     command = [
       "uvicorn", "gtochess.api.main:app",
       "--host", "0.0.0.0", "--port", "8000",
@@ -107,16 +102,19 @@ resource "aws_ecs_task_definition" "worker" {
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
-  volume {
-    name = local.data_volume.name
+  dynamic "volume" {
+    for_each = local.uses_efs ? [1] : []
+    content {
+      name = "data"
 
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.data[0].id
+        transit_encryption = "ENABLED"
 
-      authorization_config {
-        access_point_id = aws_efs_access_point.data.id
-        iam             = "ENABLED"
+        authorization_config {
+          access_point_id = aws_efs_access_point.data[0].id
+          iam             = "ENABLED"
+        }
       }
     }
   }
@@ -127,7 +125,7 @@ resource "aws_ecs_task_definition" "worker" {
     essential   = true
     environment = local.common_environment
     secrets     = local.common_secrets
-    mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
+    mountPoints = local.data_mounts
     command = [
       "celery", "-A", "gtochess.jobs.app", "worker",
       "-Q", "default", "--loglevel=info", "--concurrency=2",
@@ -152,16 +150,19 @@ resource "aws_ecs_task_definition" "measure" {
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
-  volume {
-    name = local.data_volume.name
+  dynamic "volume" {
+    for_each = local.uses_efs ? [1] : []
+    content {
+      name = "data"
 
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.data[0].id
+        transit_encryption = "ENABLED"
 
-      authorization_config {
-        access_point_id = aws_efs_access_point.data.id
-        iam             = "ENABLED"
+        authorization_config {
+          access_point_id = aws_efs_access_point.data[0].id
+          iam             = "ENABLED"
+        }
       }
     }
   }
@@ -172,7 +173,7 @@ resource "aws_ecs_task_definition" "measure" {
     essential   = true
     environment = local.common_environment
     secrets     = local.common_secrets
-    mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
+    mountPoints = local.data_mounts
     command = [
       "celery", "-A", "gtochess.jobs.app", "worker",
       "-Q", "measure", "--pool=solo", "--loglevel=info",
@@ -214,11 +215,18 @@ resource "aws_ecs_service" "api" {
   depends_on = [aws_lb_listener.http]
 }
 
+# Zero by default. A desired count of one made the capacity provider launch a
+# c7a.2xlarge and hold it, about $117 a month to wait for work that had not been
+# asked for. Celery jobs queue in Redis until a worker exists.
+#
+# Deliberately not ignore_changes: the floor is the point, so an apply puts it
+# back. Drain a queue by raising worker_desired_count, not by poking the service,
+# or the next apply will undo it.
 resource "aws_ecs_service" "worker" {
   name            = "${local.name}-worker"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
-  desired_count   = 1
+  desired_count   = var.worker_desired_count
 
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.worker.name

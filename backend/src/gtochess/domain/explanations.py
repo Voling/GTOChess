@@ -13,6 +13,10 @@ class EvidenceKind(StrEnum):
     REPERTOIRE = "repertoire"
     OPENING = "opening"
     PLAN = "plan"
+    # A general idea rather than a measurement of this position. Kept in its own
+    # kind so a claim citing one is visibly transferable knowledge, not something
+    # the engine said about the board in front of it.
+    PRINCIPLE = "principle"
 
 
 class Evidence(BaseModel):

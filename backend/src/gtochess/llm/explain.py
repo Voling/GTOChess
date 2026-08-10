@@ -22,8 +22,9 @@ from gtochess.domain.openings import OpeningFamily
 from gtochess.domain.storyboard import Storyboard
 from gtochess.engine.attribution import attribute
 from gtochess.engine.protocol import EngineProvider
+from gtochess.ingest.knowledge_store import KnowledgeStore
 from gtochess.llm.board import BoardSession
-from gtochess.llm.facts import build_evidence
+from gtochess.llm.facts import build_evidence, plan_principles
 from gtochess.llm.mistakes import Mistake, build_mistake_evidence
 from gtochess.llm.provider import (
     AnthropicProvider,
@@ -148,6 +149,21 @@ def study_position(
     )
 
 
+def transferable(digest: str, knowledge: KnowledgeStore | None) -> list[Evidence]:
+    """General ideas that survived being measured somewhere else.
+
+    Keyed by position and shared, like the rest of the evidence, so this stays
+    outside the personal cache split.
+    """
+    if knowledge is None:
+        return []
+    held = knowledge.get(digest)
+    if held is None:
+        return []
+    steps, neighbours = knowledge.sharing_prefix(held)
+    return plan_principles(held, steps, neighbours)
+
+
 def explain_position(
     board: chess.Board,
     *,
@@ -161,6 +177,7 @@ def explain_position(
     multipv: int = 3,
     study: PositionStudy | None = None,
     probe: EngineProbe | None = None,
+    knowledge: KnowledgeStore | None = None,
 ) -> Explanation:
     if personal is not None and shared:
         raise ValueError(
@@ -183,6 +200,7 @@ def explain_position(
         family=personal.family if personal else None,
         continuations=personal.continuations if personal else (),
         attribution=study.attribution,
+        principles=transferable(digest, knowledge),
     )
     draft = provider.explain(brief_for(board, node), evidence, probe)
     if probe is not None:

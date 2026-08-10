@@ -8,10 +8,15 @@ from jwt import PyJWKClient
 from pydantic import BaseModel, ConfigDict
 
 from gtochess.config import Settings, get_settings
+from gtochess.domain.accounts import Account
 
 
 class AuthError(Exception):
     pass
+
+
+class Forbidden(AuthError):
+    """Signed in, but not for this. A different status from not signed in."""
 
 
 # Reachable without an account. Everything else under /api/ needs one, because
@@ -59,7 +64,25 @@ def authorize(header: str | None, settings: Settings, *, charge: bool = False) -
 
 
 def status_for(error: AuthError) -> int:
-    return 429 if "ceiling" in str(error) else 401
+    if "ceiling" in str(error):
+        return 429
+    return 403 if isinstance(error, Forbidden) else 401
+
+
+def readable_player(account: Account | None, username: str, settings: Settings) -> str:
+    """The username this caller may look at.
+
+    Verifying a token says who is asking. It does not say whose games they get,
+    and until this existed any signed in account could read any player by typing
+    a name into the box.
+    """
+    if not settings.auth_required:
+        return username
+    if account is None or account.player is None:
+        raise Forbidden("link a lichess account before reading a repertoire")
+    if not account.may_read(username):
+        raise Forbidden(f"that account is linked to {account.player}, not {username}")
+    return account.player
 
 
 def issuer_for(settings: Settings) -> str:

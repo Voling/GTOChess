@@ -7,10 +7,25 @@ import time
 from urllib.parse import urlencode
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from gtochess.config import Settings, get_settings
-from gtochess.ingest.tokens import StoredToken
+
+
+class StoredToken(BaseModel):
+    """What lichess handed back. Held on the Account that authorised it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    access_token: str
+    token_type: str = "Bearer"
+    expires_at: int | None = None
+    username: str | None = None
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= int(time.time())
+
 
 AUTHORIZE_PATH = "/oauth"
 TOKEN_PATH = "/api/token"

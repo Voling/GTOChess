@@ -7,6 +7,7 @@ import chess
 from gtochess.analysis.structure import compute_structure
 from gtochess.domain.explanations import Evidence, EvidenceKind
 from gtochess.domain.graph import GraphEdge, GraphNode
+from gtochess.domain.knowledge import PositionKnowledge
 from gtochess.domain.models import (
     AblationKind,
     EngineReport,
@@ -238,6 +239,7 @@ def build_evidence(
     family: OpeningFamily | None = None,
     continuations: Sequence[GraphEdge] = (),
     attribution: PositionAttribution | None = None,
+    principles: Sequence[Evidence] = (),
     line_limit: int = 3,
     sensitivity_limit: int = 3,
 ) -> list[Evidence]:
@@ -301,4 +303,77 @@ def build_evidence(
             Evidence(id="opening", kind=EvidenceKind.OPENING, statement=_opening_statement(family))
         )
 
+    evidence.extend(principles)
+    return evidence
+
+
+PRINCIPLE_LIMIT = 4
+
+
+def plan_principles(
+    held: PositionKnowledge,
+    steps: int,
+    neighbours: Sequence[PositionKnowledge],
+    *,
+    limit: int = PRINCIPLE_LIMIT,
+) -> list[Evidence]:
+    """What transfers from other positions that reach for the same idea.
+
+    Theory, but measured rather than quoted: every statement here comes from an
+    engine search on a real position, so a claim citing one is still falsifiable.
+    The ids are their own prefix so a reader can tell a general idea from a
+    reading of the board in front of them.
+    """
+    if steps <= 0 or not neighbours:
+        return []
+
+    prefix = held.plan_prefix(steps)
+    if not prefix:
+        return []
+
+    kept = sorted(neighbours, key=lambda r: (-r.depth, r.digest))[:limit]
+    moves = _and_list(sorted({r.best_san for r in kept}))
+    others = len(neighbours)
+    positions = "position" if others == 1 else "positions"
+
+    evidence = [
+        Evidence(
+            id="prin1",
+            kind=EvidenceKind.PRINCIPLE,
+            statement=(
+                f"{others} other studied {positions} reach for the same idea, {prefix}. "
+                f"There the engine's move was {moves}."
+            ),
+        )
+    ]
+
+    # Squares that carry the evaluation in every one of them are the idea's real
+    # subject, and the thing worth naming in an explanation.
+    shared = set(held.load_bearing)
+    for record in kept:
+        shared &= set(record.load_bearing)
+    if shared:
+        evidence.append(
+            Evidence(
+                id="prin2",
+                kind=EvidenceKind.PRINCIPLE,
+                statement=(
+                    f"Across those positions the evaluation turns on "
+                    f"{_and_list(sorted(shared))} every time."
+                ),
+            )
+        )
+
+    single = [r for r in kept if r.is_single_answer]
+    if single:
+        evidence.append(
+            Evidence(
+                id="prin3",
+                kind=EvidenceKind.PRINCIPLE,
+                statement=(
+                    f"In {len(single)} of them the idea has only one move that keeps it, "
+                    "so the position is more forcing than it looks."
+                ),
+            )
+        )
     return evidence

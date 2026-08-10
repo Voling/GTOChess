@@ -14,6 +14,7 @@ from gtochess.analysis.sweep import (
 from gtochess.config import get_settings
 from gtochess.domain.games import Side
 from gtochess.ingest.loss_store import LossStore
+from gtochess.storage import get_storage
 
 
 def show(progress: SweepProgress) -> None:
@@ -41,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     from gtochess.api.main import graph_for
 
     settings = get_settings()
-    store = LossStore(settings.data_dir)
+    store = LossStore(get_storage())
     graph = graph_for(
         args.username,
         side=Side(args.side),

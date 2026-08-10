@@ -54,30 +54,16 @@ resource "aws_acm_certificate_validation" "this" {
   validation_record_fqdns = [for record in aws_route53_record.validation : record.fqdn]
 }
 
-resource "aws_cloudfront_cache_policy" "api" {
-  name        = "${local.name}-api"
-  default_ttl = 0
-  min_ttl     = 0
-  max_ttl     = 0
-
-  parameters_in_cache_key_and_forwarded_to_origin {
-    enable_accept_encoding_gzip = true
-
-    cookies_config {
-      cookie_behavior = "none"
-    }
-
-    headers_config {
-      header_behavior = "whitelist"
-      headers {
-        items = ["Authorization"]
-      }
-    }
-
-    query_strings_config {
-      query_string_behavior = "all"
-    }
-  }
+# Managed policies rather than one of our own. A policy with every TTL at zero is
+# "caching disabled", and CloudFront refuses a header whitelist in that mode:
+# there is no cache key to put a header into. CachingDisabled says store nothing,
+# AllViewerExceptHostHeader forwards the request whole, including Authorization.
+# Nothing is cached, so nothing can be served to the wrong account.
+locals {
+  # CachingDisabled
+  cache_none = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+  # AllViewerExceptHostHeader: the ALB routes on path, not on the viewer's Host.
+  forward_all = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
 }
 
 resource "aws_cloudfront_origin_access_control" "site" {
@@ -153,25 +139,27 @@ resource "aws_cloudfront_distribution" "this" {
   # carrying a bearer token. None of it is cacheable, and caching a response
   # keyed without the token would hand one account's data to another.
   ordered_cache_behavior {
-    path_pattern           = "/api/*"
-    target_origin_id       = "alb"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods         = ["GET", "HEAD"]
-    cache_policy_id        = aws_cloudfront_cache_policy.api.id
-    compress               = true
+    path_pattern             = "/api/*"
+    target_origin_id         = "alb"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = local.cache_none
+    origin_request_policy_id = local.forward_all
+    compress                 = true
   }
 
   # Kept reachable from the edge so a deploy can be checked from outside the VPC.
   # The target group checks the task directly and does not come through here.
   ordered_cache_behavior {
-    path_pattern           = "/health"
-    target_origin_id       = "alb"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    cache_policy_id        = aws_cloudfront_cache_policy.api.id
-    compress               = true
+    path_pattern             = "/health"
+    target_origin_id         = "alb"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = local.cache_none
+    origin_request_policy_id = local.forward_all
+    compress                 = true
   }
 
   restrictions {

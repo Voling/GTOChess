@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from functools import lru_cache
 from typing import Any
+from urllib.parse import unquote
 
 import chess
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -22,11 +25,13 @@ from gtochess.api.auth import (
     Principal,
     authorize,
     guards,
+    readable_player,
     status_for,
 )
 from gtochess.api.imports import ImportJob, read_job
 from gtochess.cache import LruCache
 from gtochess.config import EngineNotProvisioned, Settings, get_settings
+from gtochess.domain.accounts import Account, LichessLink
 from gtochess.domain.annotations import MoveQuality
 from gtochess.domain.book import OpeningPhase
 from gtochess.domain.explanations import Explanation
@@ -35,6 +40,7 @@ from gtochess.domain.graph import RepertoireGraph
 from gtochess.domain.knowledge import KnowledgeView, PlanNeighbour
 from gtochess.domain.outcomes import OutcomeReport
 from gtochess.engine.stockfish import StockfishEngine
+from gtochess.ingest.account_store import AccountStore
 from gtochess.ingest.analysis_store import AnalysisStore
 from gtochess.ingest.annotations_store import AnnotationStore, shape_key
 from gtochess.ingest.explanation_store import ExplanationStore
@@ -42,8 +48,7 @@ from gtochess.ingest.graph import GameWalk, prune_walk, walk_games
 from gtochess.ingest.knowledge_store import KnowledgeStore
 from gtochess.ingest.loss_store import LossStore
 from gtochess.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
-from gtochess.ingest.pipeline import games_name
-from gtochess.ingest.tokens import TokenStore, resolve_token
+from gtochess.ingest.pipeline import games_name, player_key
 from gtochess.jobs.tasks import annotate_player, import_player, learn_positions
 from gtochess.llm.explain import (
     Analysis,
@@ -61,7 +66,7 @@ from gtochess.llm.explain import (
 )
 from gtochess.llm.provider import ExplanationProvider, ProviderError
 from gtochess.llm.tools import EngineProbe
-from gtochess.storage import get_storage
+from gtochess.storage import StorageError, get_storage
 
 app = FastAPI(title="GTO Chess", version="0.1.0")
 
@@ -78,13 +83,95 @@ app.add_middleware(
 
 # One gate rather than a dependency on twenty routes, so a new endpoint is
 # closed by default instead of open until somebody remembers.
+PLAYER_PATH = re.compile(r"^/api/players/([^/]+)/")
+
+# Short lived on purpose. The cache is per process and the API scales out, so a
+# link made on one task has to become visible on the others. Without an expiry
+# the second task keeps refusing the caller until its entry happens to be
+# evicted, which with a handful of accounts is never.
+ACCOUNT_TTL_S = 30.0
+ACCOUNT_CACHE_MAX = 256
+
+MISSING = "missing"
+
+# The value is None when the subject has no record. A signed in user who has not
+# linked lichess is the busiest caller there is, and without holding that answer
+# every one of their requests was an object read before being refused.
+_accounts: dict[str, tuple[float, Account | None]] = {}
+
+
+def cached_account(subject: str) -> Account | None | str:
+    """The held answer, or MISSING when nothing is held. None means no record."""
+    held = _accounts.get(subject)
+    if held is None:
+        return MISSING
+    stamped, account = held
+    if time.monotonic() - stamped > ACCOUNT_TTL_S:
+        _accounts.pop(subject, None)
+        return MISSING
+    return account
+
+
+def hold_account(subject: str, account: Account | None) -> Account | None:
+    if len(_accounts) >= ACCOUNT_CACHE_MAX:
+        _accounts.clear()
+    _accounts[subject] = (time.monotonic(), account)
+    return account
+
+
+def forget_accounts() -> None:
+    _accounts.clear()
+
+
+def account_for(principal: Principal) -> Account | None:
+    """The caller's record, read only.
+
+    Deliberately does not create one. This runs on the authorization path of
+    every request, and a read must not depend on a write succeeding: a missing
+    record and an unlinked record mean the same thing to `readable_player`.
+    """
+    held = cached_account(principal.subject)
+    if held is not MISSING:
+        return held  # type: ignore[return-value]
+    return hold_account(principal.subject, AccountStore(get_storage()).get(principal.subject))
+
+
+def ensure_account(principal: Principal) -> Account:
+    """The caller's record, created if absent. Only where a write is expected."""
+    held = cached_account(principal.subject)
+    if isinstance(held, Account):
+        return held
+    made = AccountStore(get_storage()).ensure(principal.subject, email=principal.email)
+    hold_account(principal.subject, made)
+    return made
+
+
+def remember_account(account: Account) -> Account:
+    AccountStore(get_storage()).upsert(account)
+    hold_account(account.subject, account)
+    return account
+
+
 @app.middleware("http")
 async def require_account(request: Request, call_next: Any) -> Response:
-    if guards(request.url.path) and request.method != "OPTIONS":
+    path = request.url.path
+    if guards(path) and request.method != "OPTIONS":
+        settings = get_settings()
         try:
-            authorize(request.headers.get("authorization"), get_settings())
+            principal = authorize(request.headers.get("authorization"), settings)
+            # Verifying the token says who is asking. This says whose games they
+            # get, which is a separate question and the one that was missing.
+            named = PLAYER_PATH.match(path)
+            if named and settings.auth_required:
+                readable_player(account_for(principal), unquote(named.group(1)), settings)
         except AuthError as exc:
             return JSONResponse(status_code=status_for(exc), content={"detail": str(exc)})
+        except StorageError:
+            # The account could not be read, so we cannot say this caller may
+            # proceed. Refusing beats serving somebody else's repertoire.
+            return JSONResponse(
+                status_code=503, content={"detail": "accounts are unreadable right now"}
+            )
     response: Response = await call_next(request)
     return response
 
@@ -101,7 +188,16 @@ def spender(authorization: str | None = Header(default=None)) -> Principal:
         raise HTTPException(status_code=status_for(exc), detail=str(exc)) from exc
 
 
+def caller(authorization: str | None = Header(default=None)) -> Principal:
+    """Identity, without the daily charge that SPENDER adds."""
+    try:
+        return authorize(authorization, get_settings())
+    except AuthError as exc:
+        raise HTTPException(status_code=status_for(exc), detail=str(exc)) from exc
+
+
 SPENDER = Depends(spender)
+CALLER = Depends(caller)
 
 
 @app.get("/api/auth/config")
@@ -144,7 +240,7 @@ def load_games(username: str, stamp: int) -> tuple[GameRecord, ...]:
 
 
 def player_games(username: str) -> tuple[GameRecord, ...]:
-    return load_games(username, import_stamp(username))
+    return load_games(player_key(username), import_stamp(username))
 
 
 _graphs: LruCache[RepertoireGraph] | None = None
@@ -167,7 +263,7 @@ def walk_cache() -> LruCache[GameWalk]:
 
 def walk_for(username: str, *, side: Side, max_ply: int) -> GameWalk:
     walks = walk_cache()
-    key = f"{username}:{import_stamp(username)}:{side.value}:{max_ply}"
+    key = f"{player_key(username)}:{import_stamp(username)}:{side.value}:{max_ply}"
     cached = walks.get(key)
     if cached is not None:
         return cached
@@ -182,7 +278,10 @@ def graph_for(
 ) -> RepertoireGraph:
     settings = get_settings()
     graphs = graph_cache()
-    key = f"{username}:{import_stamp(username)}:{side.value}:{max_ply}:{min_volume}:{max_children}"
+    key = (
+        f"{player_key(username)}:{import_stamp(username)}:"
+        f"{side.value}:{max_ply}:{min_volume}:{max_children}"
+    )
     cached = graphs.get(key)
     if cached is not None:
         return cached
@@ -222,8 +321,12 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/api/players/{username}/import", response_model=ImportJob, status_code=202)
-def start_import(username: str, max_games: int | None = Query(default=None, ge=1)) -> ImportJob:
-    handle = import_player.delay(username, max_games)
+def start_import(
+    username: str,
+    max_games: int | None = Query(default=None, ge=1),
+    who: Principal = CALLER,
+) -> ImportJob:
+    handle = import_player.delay(username, max_games, who.subject)
     return ImportJob(job_id=handle.id, username=username, state="queued")
 
 
@@ -234,14 +337,17 @@ def import_status(job_id: str, username: str = Query(default="")) -> ImportJob:
 
 
 @app.get("/api/auth/lichess")
-def lichess_auth_status() -> dict[str, Any]:
+def lichess_auth_status(who: Principal = CALLER) -> dict[str, Any]:
     settings = get_settings()
-    stored = TokenStore.from_settings(settings).read()
+    held = account_for(who)
+    link = held.lichess if held else None
+    mine = link.usable_token if link else None
+    connected = bool(mine or settings.lichess_token)
     return {
-        "connected": resolve_token(settings) is not None,
-        "source": "env" if settings.lichess_token else ("oauth" if stored else None),
-        "username": stored.username if stored else None,
-        "export_rate": 60 if resolve_token(settings) else 20,
+        "connected": connected,
+        "source": "oauth" if mine else ("env" if settings.lichess_token else None),
+        "username": link.username if link else None,
+        "export_rate": 60 if connected else 20,
     }
 
 
@@ -257,7 +363,9 @@ def lichess_auth_start() -> dict[str, str]:
 
 
 @app.post("/api/auth/lichess/callback")
-def lichess_auth_callback(code: str = Query(...), state: str = Query(...)) -> dict[str, Any]:
+def lichess_auth_callback(
+    code: str = Query(...), state: str = Query(...), who: Principal = CALLER
+) -> dict[str, Any]:
     pending = _pending.get(state)
     if pending is None:
         raise HTTPException(status_code=400, detail="that sign in attempt expired; start again")
@@ -270,13 +378,22 @@ def lichess_auth_callback(code: str = Query(...), state: str = Query(...)) -> di
     finally:
         oauth.close()
 
-    TokenStore.from_settings().write(token)
+    if not token.username:
+        raise HTTPException(status_code=502, detail="lichess did not say which account that was")
+
+    link = LichessLink(
+        username=token.username,
+        access_token=token.access_token,
+        token_type=token.token_type,
+        expires_at=token.expires_at,
+    )
+    remember_account(ensure_account(who).linked_to(link))
     return {"connected": True, "username": token.username, "export_rate": 60}
 
 
 @app.delete("/api/auth/lichess", status_code=204)
-def lichess_auth_disconnect() -> None:
-    TokenStore.from_settings().clear()
+def lichess_auth_disconnect(who: Principal = CALLER) -> None:
+    remember_account(ensure_account(who).unlinked())
 
 
 @app.post("/api/players/{username}/knowledge", status_code=202)
@@ -455,7 +572,12 @@ def write_explanation(
 
         try:
             explanation = explain_position(
-                board, provider=provider, digest=digest, study=study, probe=probe
+                board,
+                provider=provider,
+                digest=digest,
+                study=study,
+                probe=probe,
+                knowledge=KnowledgeStore(get_storage()),
             )
         except ProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc

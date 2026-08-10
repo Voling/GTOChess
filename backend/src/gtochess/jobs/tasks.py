@@ -31,8 +31,15 @@ def announce(event: str, body: dict[str, Any]) -> None:
 
 
 @app.task(bind=True, name=IMPORT_TASK, max_retries=0)
-def import_player(self: Task, username: str, max_games: int | None = None) -> dict[str, Any]:
+def import_player(
+    self: Task, username: str, max_games: int | None = None, subject: str | None = None
+) -> dict[str, Any]:
+    from gtochess.ingest.account_store import AccountStore
+
     settings = get_settings()
+    # Whoever authorised the export, not whoever happened to sign in last.
+    account = AccountStore(get_storage()).get(subject) if subject else None
+    token = account.lichess.usable_token if account and account.lichess else None
 
     def publish(progress: IngestProgress) -> None:
         self.update_state(state="PROGRESS", meta=progress.model_dump())
@@ -43,6 +50,7 @@ def import_player(self: Task, username: str, max_games: int | None = None) -> di
             settings=settings,
             max_games=max_games,
             out_dir=get_storage(),
+            token=token,
             on_progress=publish,
             report_every=settings.job_report_every,
         )

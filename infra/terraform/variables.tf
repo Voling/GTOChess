@@ -108,6 +108,15 @@ variable "use_fargate_spot" {
   default = true
 }
 
+# Nothing idles. Raise it to drain the import and annotation queue, and put it
+# back when the queue is empty.
+variable "worker_desired_count" {
+  type    = number
+  default = 0
+}
+
+# The one floor that cannot be zero. An ECS service does not wake on a request,
+# so zero tasks here is the site being off rather than cold.
 variable "api_desired_count" {
   type    = number
   default = 1

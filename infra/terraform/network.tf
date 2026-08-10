@@ -5,6 +5,7 @@ locals {
   # Without a NAT there is no route out of the private subnets, so anything that
   # has to reach Anthropic, lichess or ECR runs in the public ones instead.
   egress_subnets = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
+  uses_efs       = !var.enable_object_storage
   public_task_ip = var.enable_nat_gateway ? "DISABLED" : "ENABLED"
 }
 
@@ -181,12 +182,15 @@ resource "aws_security_group" "data" {
     security_groups = [aws_security_group.tasks.id]
   }
 
-  ingress {
-    description     = "NFS"
-    from_port       = 2049
-    to_port         = 2049
-    protocol        = "tcp"
-    security_groups = [aws_security_group.tasks.id]
+  dynamic "ingress" {
+    for_each = local.uses_efs ? [1] : []
+    content {
+      description     = "NFS"
+      from_port       = 2049
+      to_port         = 2049
+      protocol        = "tcp"
+      security_groups = [aws_security_group.tasks.id]
+    }
   }
 
   tags = { Name = "${local.name}-data" }

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from gtochess.api.imports import read_job
-from gtochess.ingest.oauth import challenge_for, make_verifier
+from gtochess.ingest.oauth import StoredToken, challenge_for, make_verifier
 from gtochess.ingest.pipeline import IngestProgress, IngestResult
-from gtochess.ingest.tokens import StoredToken, TokenStore
 
 RESULT = {
     "username": "dylanette",
@@ -40,34 +37,15 @@ class TestPkce:
         assert 43 <= len(make_verifier()) <= 128
 
 
-class TestTokenStore:
-    def test_a_written_token_reads_back(self, tmp_path: Path) -> None:
-        store = TokenStore(tmp_path / "token.json")
-        store.write(StoredToken(access_token="abc", username="dylanette"))
-        stored = store.read()
-        assert stored is not None
-        assert stored.access_token == "abc"
-        assert stored.username == "dylanette"
-
-    def test_a_missing_file_reads_as_nothing(self, tmp_path: Path) -> None:
-        assert TokenStore(tmp_path / "absent.json").read() is None
-
-    def test_corrupt_contents_read_as_nothing(self, tmp_path: Path) -> None:
-        path = tmp_path / "token.json"
-        path.write_text("not json", encoding="utf-8")
-        assert TokenStore(path).read() is None
-
-    def test_clearing_removes_the_file(self, tmp_path: Path) -> None:
-        store = TokenStore(tmp_path / "token.json")
-        store.write(StoredToken(access_token="abc"))
-        store.clear()
-        assert store.read() is None
-
-    def test_an_expired_token_is_flagged(self) -> None:
+class TestStoredToken:
+    def test_an_expiry_in_the_past_is_expired(self) -> None:
         assert StoredToken(access_token="a", expires_at=1).expired is True
 
-    def test_a_token_without_an_expiry_never_expires(self) -> None:
+    def test_no_expiry_never_expires(self) -> None:
         assert StoredToken(access_token="a").expired is False
+
+    def test_a_future_expiry_is_live(self) -> None:
+        assert StoredToken(access_token="a", expires_at=4_102_444_800).expired is False
 
 
 class TestProgress:

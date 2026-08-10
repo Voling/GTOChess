@@ -11,6 +11,7 @@ from gtochess.engine.stockfish import StockfishEngine
 from gtochess.ingest.annotations_store import AnnotationStore, shape_key
 from gtochess.ingest.graph import build_graph
 from gtochess.ingest.pipeline import load_player_games
+from gtochess.storage import get_storage
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     engine_path = settings.resolve_engine_path()
-    games, stamp = load_player_games(args.username, settings.data_dir)
+    games, stamp = load_player_games(args.username, get_storage())
     if not games:
         print(f"no games imported for {args.username!r} yet", file=sys.stderr)
         return 1
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         engine.close()
 
-    path = AnnotationStore(settings.data_dir).write(result)
+    path = AnnotationStore(get_storage()).write(result)
     tail = ", truncated by the budget" if result.truncated else ""
     minutes = (time.monotonic() - started) / 60
     print(

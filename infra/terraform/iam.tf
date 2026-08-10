@@ -52,13 +52,16 @@ resource "aws_iam_role" "task" {
 }
 
 data "aws_iam_policy_document" "task" {
-  statement {
-    actions = [
-      "elasticfilesystem:ClientMount",
-      "elasticfilesystem:ClientWrite",
-      "elasticfilesystem:ClientRootAccess",
-    ]
-    resources = [aws_efs_file_system.data.arn]
+  dynamic "statement" {
+    for_each = local.uses_efs ? [1] : []
+    content {
+      actions = [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess",
+      ]
+      resources = [aws_efs_file_system.data[0].arn]
+    }
   }
 
   dynamic "statement" {

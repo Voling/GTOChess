@@ -48,13 +48,16 @@ class LichessClient:
         )
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> LichessClient:
-        from gtochess.ingest.tokens import resolve_token
-
+    def from_settings(
+        cls, settings: Settings | None = None, *, token: str | None = None
+    ) -> LichessClient:
         settings = settings or get_settings()
+        # The caller's own token when there is one. The env var is a single
+        # account fallback for local work, never a credential shared between
+        # people in a deployment.
         return cls(
             base_url=settings.lichess_base_url,
-            token=resolve_token(settings),
+            token=token or settings.lichess_token,
             user_agent=settings.user_agent,
             timeout_s=settings.lichess_timeout_s,
             max_retries=settings.lichess_max_retries,

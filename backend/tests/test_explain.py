@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,8 +13,10 @@ from gtochess.analysis.sensitivity import compute_sensitivity
 from gtochess.domain.explanations import Claim, Evidence, EvidenceKind, Explanation
 from gtochess.domain.graph import GraphEdge, GraphNode
 from gtochess.domain.identity import position_key
+from gtochess.domain.knowledge import PositionKnowledge
 from gtochess.domain.models import Variant
 from gtochess.engine.reference import ReferenceEngine
+from gtochess.ingest.knowledge_store import KnowledgeStore
 from gtochess.llm.explain import (
     ExplanationCache,
     PersonalContext,
@@ -23,8 +26,9 @@ from gtochess.llm.explain import (
     ground,
     study_key,
     study_position,
+    transferable,
 )
-from gtochess.llm.facts import build_evidence, mover_cp
+from gtochess.llm.facts import build_evidence, mover_cp, plan_principles
 from gtochess.llm.provider import (
     DeterministicProvider,
     Draft,
@@ -426,3 +430,91 @@ class TestProviderSelection:
 
     def test_known_efforts_pass_through(self) -> None:
         assert effort_level("xhigh") == "xhigh"
+
+
+def knowledge_of(digest: str, **overrides: object) -> PositionKnowledge:
+    base: dict[str, object] = {
+        "digest": digest,
+        "epd": "8/8/8/8/8/8/8/8 w - -",
+        "variant": Variant.STANDARD,
+        "depth": 18,
+        "best_san": "Nf3",
+        "best_cp": 30,
+        "delta_to_second_cp": 20,
+        "is_single_answer": False,
+        "playable_moves": 4,
+        "legal_moves": 30,
+        "plan_digest": "p1",
+        "plan_tokens": "develop centralise castle",
+        "load_bearing": ("e4", "d5"),
+    }
+    base.update(overrides)
+    return PositionKnowledge(**base)  # type: ignore[arg-type]
+
+
+class TestPlanPrinciples:
+    def test_nothing_shared_yields_nothing(self) -> None:
+        assert plan_principles(knowledge_of("a"), 0, []) == []
+        assert plan_principles(knowledge_of("a"), 2, []) == []
+
+    def test_the_shared_idea_is_quoted_back(self) -> None:
+        held = knowledge_of("a")
+        others = [knowledge_of("b", best_san="Bb5"), knowledge_of("c", best_san="c4")]
+        found = plan_principles(held, 2, others)
+        assert found[0].id == "prin1"
+        assert found[0].kind is EvidenceKind.PRINCIPLE
+        assert "develop centralise" in found[0].statement
+        assert "Bb5" in found[0].statement and "c4" in found[0].statement
+
+    def test_a_principle_is_never_an_engine_reading(self) -> None:
+        # The whole point of the separate kind: a reader can tell them apart.
+        found = plan_principles(knowledge_of("a"), 2, [knowledge_of("b")])
+        assert all(e.kind is EvidenceKind.PRINCIPLE for e in found)
+        assert all(e.id.startswith("prin") for e in found)
+
+    def test_squares_that_carry_every_position_are_named(self) -> None:
+        held = knowledge_of("a", load_bearing=("e4", "d5"))
+        others = [knowledge_of("b", load_bearing=("e4", "f7"))]
+        statement = next(e for e in plan_principles(held, 2, others) if e.id == "prin2")
+        assert "e4" in statement.statement
+        assert "d5" not in statement.statement
+
+    def test_no_common_square_means_no_such_claim(self) -> None:
+        held = knowledge_of("a", load_bearing=("e4",))
+        others = [knowledge_of("b", load_bearing=("h6",))]
+        assert not any(e.id == "prin2" for e in plan_principles(held, 2, others))
+
+    def test_forcing_neighbours_are_reported(self) -> None:
+        others = [knowledge_of("b", is_single_answer=True)]
+        statement = next(
+            e for e in plan_principles(knowledge_of("a"), 2, others) if e.id == "prin3"
+        )
+        assert "only one move" in statement.statement
+
+    def test_the_count_is_of_all_neighbours_not_the_quoted_few(self) -> None:
+        others = [knowledge_of(str(i)) for i in range(9)]
+        found = plan_principles(knowledge_of("a"), 2, others, limit=2)
+        assert "9 other studied positions" in found[0].statement
+
+    def test_one_neighbour_reads_as_singular(self) -> None:
+        found = plan_principles(knowledge_of("a"), 2, [knowledge_of("b")])
+        assert "1 other studied position " in found[0].statement
+
+
+class TestTransferable:
+    def test_no_store_means_no_principles(self) -> None:
+        assert transferable("abc", None) == []
+
+    def test_a_position_the_store_never_saw_yields_nothing(self, tmp_path: Path) -> None:
+        assert transferable("abc", KnowledgeStore(tmp_path)) == []
+
+    def test_a_lone_position_has_nothing_to_transfer_from(self, tmp_path: Path) -> None:
+        store = KnowledgeStore(tmp_path)
+        store.extend([knowledge_of("abc")])
+        assert transferable("abc", store) == []
+
+    def test_company_produces_principles(self, tmp_path: Path) -> None:
+        store = KnowledgeStore(tmp_path)
+        store.extend([knowledge_of("abc"), knowledge_of("def", best_san="Bb5")])
+        found = transferable("abc", store)
+        assert found and found[0].kind is EvidenceKind.PRINCIPLE

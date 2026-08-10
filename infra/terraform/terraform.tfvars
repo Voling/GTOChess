@@ -10,7 +10,7 @@ hosted_zone_id = "Z01814262NV51RS56NGUR"
 # takes it past $200.
 enable_nat_gateway    = false
 enable_database       = false
-enable_object_storage = false
+enable_object_storage = true
 use_fargate_spot      = true
 
 api_desired_count = 1

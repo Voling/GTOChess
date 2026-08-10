@@ -45,5 +45,9 @@ output "redis_endpoint" {
 }
 
 output "data_filesystem_id" {
-  value = aws_efs_file_system.data.id
+  value = one(aws_efs_file_system.data[*].id)
+}
+
+output "data_bucket" {
+  value = one(aws_s3_bucket.data[*].bucket)
 }

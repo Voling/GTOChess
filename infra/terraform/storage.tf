@@ -66,10 +66,11 @@ resource "aws_s3_bucket_policy" "site" {
   policy = data.aws_iam_policy_document.site.json
 }
 
-# The JSONL stores under GTOCHESS_DATA_DIR are read by the API and written by
-# the workers, so they need one filesystem between them. This is the piece that
-# disappears once those stores move into Postgres.
+# Only when the stores are not in S3. Every store goes through the Storage
+# interface now, so with object storage on nothing reads or writes a filesystem
+# and this whole block has no reason to exist.
 resource "aws_efs_file_system" "data" {
+  count          = local.uses_efs ? 1 : 0
   creation_token = "${local.name}-data"
   encrypted      = true
 
@@ -81,14 +82,15 @@ resource "aws_efs_file_system" "data" {
 }
 
 resource "aws_efs_mount_target" "data" {
-  count           = var.az_count
-  file_system_id  = aws_efs_file_system.data.id
+  count           = local.uses_efs ? var.az_count : 0
+  file_system_id  = aws_efs_file_system.data[0].id
   subnet_id       = local.egress_subnets[count.index]
   security_groups = [aws_security_group.data.id]
 }
 
 resource "aws_efs_access_point" "data" {
-  file_system_id = aws_efs_file_system.data.id
+  count          = local.uses_efs ? 1 : 0
+  file_system_id = aws_efs_file_system.data[0].id
 
   posix_user {
     uid = 1000
