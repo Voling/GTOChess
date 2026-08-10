@@ -21,6 +21,7 @@ locals {
     { name = "GTOCHESS_COGNITO_USER_POOL_ID", value = aws_cognito_user_pool.this.id },
     { name = "GTOCHESS_COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.this.id },
     { name = "GTOCHESS_COGNITO_REGION", value = var.region },
+    { name = "GTOCHESS_COGNITO_DOMAIN", value = aws_cognito_user_pool_domain.this.domain },
     { name = "GTOCHESS_AUTH_REQUIRED", value = "true" },
     ],
     # Set, the stores go to S3 and DATA_DIR above is only the games export.

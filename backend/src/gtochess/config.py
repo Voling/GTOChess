@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     auth_required: bool = True
     cognito_user_pool_id: str | None = None
     cognito_client_id: str | None = None
+    # Hosted UI host, without a scheme. The browser reads it from
+    # /api/auth/config so a rebuild is not needed when the stack moves.
+    cognito_domain: str | None = None
     cognito_region: str = "us-east-1"
     analysis_daily_limit: int = 10
 

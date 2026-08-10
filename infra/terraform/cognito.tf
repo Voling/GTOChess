@@ -24,6 +24,20 @@ resource "aws_cognito_user_pool" "this" {
   admin_create_user_config {
     allow_admin_create_user_only = true
   }
+
+  # Cognito already locks an account out after five failed sign ins, backing off
+  # exponentially to about fifteen minutes. That is built in and not tunable.
+  # This is the layer on top: it blocks credentials known to be breached and
+  # raises the bar on sign ins that look wrong. Billed per monthly active user,
+  # which at this size is pennies.
+  user_pool_add_ons {
+    advanced_security_mode = var.cognito_threat_protection ? "ENFORCED" : "OFF"
+  }
+}
+
+variable "cognito_threat_protection" {
+  type    = bool
+  default = true
 }
 
 resource "aws_cognito_user_pool_domain" "this" {

@@ -1,3 +1,5 @@
+import { accessToken } from "./auth";
+
 export interface GraphNode {
   digest: string;
   epd: string;
@@ -84,7 +86,7 @@ export function completeAuth(code: string, state: string): Promise<AuthStatus> {
 }
 
 export async function disconnectAuth(): Promise<void> {
-  await fetch("/api/auth/lichess", { method: "DELETE" });
+  await send<void>("/api/auth/lichess", "DELETE");
 }
 
 export function startImport(
@@ -290,7 +292,11 @@ function shapeParams(query: GraphQuery): URLSearchParams {
 }
 
 async function send<T>(path: string, method: string): Promise<T> {
-  const response = await fetch(path, { method });
+  // Every /api route needs an account, so the token goes on here rather than at
+  // each of the twenty call sites.
+  const token = await accessToken();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await fetch(path, { method, headers });
   if (!response.ok) {
     const detail = await response
       .json()
@@ -300,6 +306,7 @@ async function send<T>(path: string, method: string): Promise<T> {
       response.status,
     );
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 

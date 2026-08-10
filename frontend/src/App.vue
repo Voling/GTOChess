@@ -28,7 +28,17 @@ import {
 } from "./api";
 import { defaultPicks, MAX_PICKS, slotsFor } from "./families";
 import { ancestry, pathTo, placeRadial, walk, type PlacedNode } from "./layout";
+import {
+  accessToken,
+  completeSignIn,
+  currentEmail,
+  loadConfig,
+  signIn,
+  signOut,
+  signedIn,
+} from "./auth";
 import AccountPanel from "./components/AccountPanel.vue";
+import SignIn from "./components/SignIn.vue";
 import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import AnalysisPane from "./components/AnalysisPane.vue";
@@ -572,11 +582,68 @@ const lastUci = computed(() => {
   return edge?.edge.uci ?? null;
 });
 
-onMounted(() => {
-  window.addEventListener("keydown", onKey);
+// The Cognito gate, separate from the lichess connection above: that one says
+// whose games to import, this one says who is allowed to ask at all.
+const accountReady = ref(false);
+const accountIn = ref(false);
+const accountBusy = ref(false);
+const accountError = ref<string | null>(null);
+const accountConfigured = ref(false);
+const accountEmail = ref<string | null>(null);
+
+async function beginSignIn() {
+  accountBusy.value = true;
+  accountError.value = null;
+  try {
+    await signIn();
+  } catch (exc) {
+    accountError.value = exc instanceof Error ? exc.message : String(exc);
+    accountBusy.value = false;
+  }
+}
+
+async function endSession() {
+  accountIn.value = false;
+  await signOut();
+}
+
+async function openDoor() {
+  try {
+    const config = await loadConfig();
+    accountConfigured.value = Boolean(config.domain && config.client_id);
+
+    // Auth off is a local convenience, never a deployment. Nothing to sign into.
+    if (!config.required) {
+      accountIn.value = true;
+      return;
+    }
+
+    if (await completeSignIn()) {
+      window.history.replaceState({}, "", "/");
+    }
+    // A stale refresh token reads as signed in until it is spent, so ask for a
+    // live token rather than trusting what is in storage.
+    accountIn.value = signedIn() && (await accessToken()) !== null;
+    accountEmail.value = currentEmail();
+  } catch (exc) {
+    accountError.value = exc instanceof Error ? exc.message : String(exc);
+    accountIn.value = false;
+  } finally {
+    accountReady.value = true;
+    accountBusy.value = false;
+  }
+}
+
+watch(accountIn, (open) => {
+  if (!open) return;
   refreshAuth();
   finishSignIn();
   load();
+});
+
+onMounted(() => {
+  window.addEventListener("keydown", onKey);
+  openDoor();
 });
 
 onBeforeUnmount(() => {
@@ -590,6 +657,15 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app">
+    <SignIn
+      v-if="accountReady && !accountIn"
+      :busy="accountBusy"
+      :error="accountError"
+      :configured="accountConfigured"
+      @start="beginSignIn"
+    />
+
+    <template v-else-if="accountIn">
     <RepertoireGraphView
       v-if="placement && !empty"
       :placement="placement"
@@ -608,6 +684,11 @@ onBeforeUnmount(() => {
         <span class="spinner" :class="{ on: loading }" aria-hidden="true" />
       </header>
       <p class="tagline">Every line {{ username }} actually plays.</p>
+
+      <p v-if="accountConfigured" class="whoami">
+        <span>{{ accountEmail ?? "Signed in" }}</span>
+        <button type="button" class="link" @click="endSession">Sign out</button>
+      </p>
 
       <button
         type="button"
@@ -783,6 +864,7 @@ onBeforeUnmount(() => {
         import more of {{ username }}'s games.
       </p>
     </div>
+    </template>
   </div>
 </template>
 
@@ -817,6 +899,28 @@ h1 {
   margin: -6px 0 3px;
   font-size: 11.5px;
   color: var(--faint);
+}
+.whoami {
+  margin: -2px 0 2px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.whoami span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--accent-bright);
+}
+.link:hover {
+  text-decoration: underline;
 }
 .spinner {
   width: 11px;

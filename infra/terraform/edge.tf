@@ -114,6 +114,7 @@ resource "aws_cloudfront_distribution" "this" {
   comment             = local.name
   aliases             = local.custom_domain ? [var.domain_name] : []
   default_root_object = "index.html"
+  web_acl_id          = one(aws_wafv2_web_acl.edge[*].arn)
 
   origin {
     domain_name = aws_lb.this.dns_name

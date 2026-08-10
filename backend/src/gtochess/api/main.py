@@ -5,8 +5,9 @@ from functools import lru_cache
 from typing import Any
 
 import chess
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from gtochess.analysis.annotations import classify
 from gtochess.analysis.book import (
@@ -19,9 +20,9 @@ from gtochess.analysis.outcomes import measure_outcomes
 from gtochess.api.auth import (
     AuthError,
     Principal,
-    bearer_token,
-    get_limiter,
-    verify_token,
+    authorize,
+    guards,
+    status_for,
 )
 from gtochess.api.imports import ImportJob, read_job
 from gtochess.cache import LruCache
@@ -75,31 +76,44 @@ app.add_middleware(
 )
 
 
+# One gate rather than a dependency on twenty routes, so a new endpoint is
+# closed by default instead of open until somebody remembers.
+@app.middleware("http")
+async def require_account(request: Request, call_next: Any) -> Response:
+    if guards(request.url.path) and request.method != "OPTIONS":
+        try:
+            authorize(request.headers.get("authorization"), get_settings())
+        except AuthError as exc:
+            return JSONResponse(status_code=status_for(exc), content={"detail": str(exc)})
+    response: Response = await call_next(request)
+    return response
+
+
 def spender(authorization: str | None = Header(default=None)) -> Principal:
-    """Guards the endpoints that cost money.
+    """Guards the endpoints that spend.
 
-    A press here is a model call on this account's bill, so it needs both a
-    verified account and room under that account's daily ceiling. The free
-    endpoints that read what has already been paid for stay open.
+    The middleware above already established there is an account. This is the
+    daily ceiling on top, because a press here is a model call on our bill.
     """
-    settings = get_settings()
-    if not settings.auth_required:
-        return Principal(subject="anonymous", username="anonymous")
-
-    token = bearer_token(authorization)
-    if token is None:
-        raise HTTPException(status_code=401, detail="sign in to run an analysis")
-
     try:
-        principal = verify_token(token, settings=settings)
-        get_limiter().charge(principal.subject)
+        return authorize(authorization, get_settings(), charge=True)
     except AuthError as exc:
-        status = 429 if "ceiling" in str(exc) else 401
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    return principal
+        raise HTTPException(status_code=status_for(exc), detail=str(exc)) from exc
 
 
 SPENDER = Depends(spender)
+
+
+@app.get("/api/auth/config")
+def auth_config() -> dict[str, Any]:
+    """What the browser needs to start a sign in. Deliberately unauthenticated."""
+    settings = get_settings()
+    return {
+        "required": settings.auth_required,
+        "domain": settings.cognito_domain,
+        "client_id": settings.cognito_client_id,
+        "region": settings.cognito_region,
+    }
 
 
 def configured_provider(settings: Settings) -> ExplanationProvider:

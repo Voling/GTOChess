@@ -14,6 +14,12 @@ class AuthError(Exception):
     pass
 
 
+# Reachable without an account. Everything else under /api/ needs one, because
+# building a graph over 28,000 games is real work even before a model is asked
+# anything.
+OPEN_PATHS = frozenset({"/health", "/api/auth/config", "/docs", "/openapi.json"})
+
+
 class Principal(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -26,7 +32,34 @@ class Principal(BaseModel):
         return self.username or self.email or self.subject
 
 
+ANONYMOUS = Principal(subject="anonymous", username="anonymous")
+
 _clients: dict[str, PyJWKClient] = {}
+
+
+def guards(path: str) -> bool:
+    return path not in OPEN_PATHS and path.startswith("/api/")
+
+
+def authorize(header: str | None, settings: Settings, *, charge: bool = False) -> Principal:
+    """Who is asking, and may they.
+
+    ``charge`` is the difference between reading what has already been paid for
+    and starting something that spends. Both need an account.
+    """
+    if not settings.auth_required:
+        return ANONYMOUS
+    token = bearer_token(header)
+    if token is None:
+        raise AuthError("sign in to continue")
+    principal = verify_token(token, settings=settings)
+    if charge:
+        get_limiter().charge(principal.subject)
+    return principal
+
+
+def status_for(error: AuthError) -> int:
+    return 429 if "ceiling" in str(error) else 401
 
 
 def issuer_for(settings: Settings) -> str:

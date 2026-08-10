@@ -4,7 +4,15 @@ import time
 
 import pytest
 
-from gtochess.api.auth import AuthError, SpendLimiter, _principal, bearer_token
+from gtochess.api.auth import (
+    AuthError,
+    SpendLimiter,
+    _principal,
+    authorize,
+    bearer_token,
+    guards,
+    status_for,
+)
 from gtochess.config import Settings
 
 POOL = "us-east-1_abc123"
@@ -12,10 +20,13 @@ CLIENT = "6a1clientid"
 
 
 def settings() -> Settings:
+    # auth_required is pinned rather than left to default: a local .env turning
+    # it off would otherwise make every refusal test pass by not running.
     return Settings(
         cognito_user_pool_id=POOL,
         cognito_client_id=CLIENT,
         cognito_region="us-east-1",
+        auth_required=True,
     )
 
 
@@ -106,6 +117,50 @@ class TestSpendLimiter:
         assert limiter.remaining("u1") == 0
         with pytest.raises(AuthError):
             limiter.charge("u1")
+
+
+class TestGuardedPaths:
+    def test_the_api_is_closed(self) -> None:
+        assert guards("/api/players/dyl/graph") is True
+        assert guards("/api/players/dyl/positions/abc/analysis") is True
+
+    def test_health_stays_open_for_the_load_balancer(self) -> None:
+        assert guards("/health") is False
+
+    def test_the_sign_in_config_stays_open(self) -> None:
+        # Closing this would mean needing an account to find out how to get one.
+        assert guards("/api/auth/config") is False
+
+    def test_anything_outside_the_api_is_not_this_gates_business(self) -> None:
+        assert guards("/") is False
+        assert guards("/assets/index-abc.js") is False
+
+    def test_a_new_endpoint_is_closed_without_being_listed(self) -> None:
+        assert guards("/api/something/invented/later") is True
+
+
+class TestAuthorize:
+    def test_no_header_is_refused(self) -> None:
+        with pytest.raises(AuthError, match="sign in"):
+            authorize(None, settings())
+
+    def test_a_bare_word_is_refused(self) -> None:
+        with pytest.raises(AuthError, match="sign in"):
+            authorize("abc.def.ghi", settings())
+
+    def test_turning_auth_off_opens_everything(self) -> None:
+        assert authorize(None, Settings(auth_required=False)).subject == "anonymous"
+
+    def test_an_open_deployment_is_never_charged(self) -> None:
+        assert authorize(None, Settings(auth_required=False), charge=True).subject == "anonymous"
+
+
+class TestErrorStatus:
+    def test_a_refused_token_is_unauthorised(self) -> None:
+        assert status_for(AuthError("sign in to continue")) == 401
+
+    def test_a_spent_budget_is_rate_limited(self) -> None:
+        assert status_for(AuthError("that account has started 10 today, the daily ceiling")) == 429
 
 
 class TestConfiguration:
