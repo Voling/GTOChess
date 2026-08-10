@@ -19,6 +19,10 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  STACK: ${{ secrets.STACK_NAME || 'gtochess-lite' }}
+
 jobs:
   # Static, so there is no image and no container. Vite content hashes every
   # asset, which is what lets the two syncs below carry different cache headers.
@@ -43,19 +47,17 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Publish the site
-        env:
-          BUCKET: ${{ secrets.SITE_BUCKET || 'gtochess-prod-site' }}
         run: |
           set -euo pipefail
-          # Hashed assets first and kept for a year, so the edge never asks for
+          # Hashed assets first and kept for a year, so a browser never asks for
           # them twice. index.html last and never cached, because it is the file
           # that names the new hashes.
-          aws s3 sync dist "s3://$BUCKET" --delete \
+          aws s3 sync dist "s3://${STACK}-site" --delete \
             --exclude "index.html" \
             --cache-control "public,max-age=31536000,immutable"
-          aws s3 cp dist/index.html "s3://$BUCKET/index.html" \
+          aws s3 cp dist/index.html "s3://${STACK}-site/index.html" \
             --cache-control "no-cache"
 
   backend:
@@ -68,7 +70,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ env.AWS_REGION }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-buildx-action@v3
@@ -79,16 +81,18 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_BACKEND || 'gtochess-prod-backend' }}:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_BACKEND || 'gtochess-prod-backend' }}:latest
+            ${{ steps.ecr.outputs.registry }}/${{ env.STACK }}-backend:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.STACK }}-backend:latest
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
-  # The task definitions name :latest, which the backend job just moved, so a
-  # forced deployment is the whole rollout. Terraform is not in this path, and
-  # the frontend is not either: it is already live once its objects land.
+  # One instance runs the whole application, so a rollout is telling it to pull.
+  # The script it runs lives on the box and was written when it was built.
   rollout:
-    needs: backend
+    needs: [web, backend]
+    # Runs when either half succeeded and neither failed, since a web-only or
+    # backend-only dispatch skips the other job rather than failing it.
+    if: always() && !cancelled() && !failure()
     runs-on: ubuntu-latest
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
@@ -96,42 +100,41 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-      - name: Force a new deployment on what changed
-        env:
-          CLUSTER: ${{ secrets.ECS_CLUSTER || 'gtochess-prod' }}
-          SERVICE_API: ${{ secrets.ECS_SERVICE_API || 'gtochess-prod-api' }}
-          SERVICE_WORKER: ${{ secrets.ECS_SERVICE_WORKER || 'gtochess-prod-worker' }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Pull and restart
         run: |
           set -euo pipefail
-          services="$SERVICE_API $SERVICE_WORKER"
-          for service in $services; do
-            echo "rolling $service"
-            aws ecs update-service --cluster "$CLUSTER" --service "$service" --force-new-deployment > /dev/null
-          done
-          for service in $services; do
-            aws ecs wait services-stable --cluster "$CLUSTER" --services "$service"
-            echo "$service stable"
-          done
-
-  # Only index.html and the SPA fallback need forgetting. The hashed assets are
-  # immutable by name, so a new build never collides with a cached old one.
-  invalidate:
-    needs: web
-    runs-on: ubuntu-latest
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-      - env:
-          DISTRIBUTION: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
-        run: |
-          if [ -z "$DISTRIBUTION" ]; then
-            echo "CLOUDFRONT_DISTRIBUTION_ID unset, nothing to invalidate"
-            exit 0
+          instance="$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${STACK}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)"
+          if [ -z "$instance" ] || [ "$instance" = "None" ]; then
+            echo "no running instance tagged ${STACK}" >&2
+            exit 1
           fi
-          aws cloudfront create-invalidation \
-            --distribution-id "$DISTRIBUTION" --paths "/" "/index.html" > /dev/null
+          echo "rolling $instance"
+
+          command="$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$instance" \
+            --parameters 'commands=["/usr/local/bin/gtochess-redeploy"]' \
+            --timeout-seconds 900 \
+            --query 'Command.CommandId' --output text)"
+
+          # send-command returns as soon as it is queued, so the run is only
+          # green once the box says the script finished.
+          for _ in $(seq 1 60); do
+            status="$(aws ssm get-command-invocation \
+              --command-id "$command" --instance-id "$instance" \
+              --query 'Status' --output text 2>/dev/null || echo Pending)"
+            case "$status" in
+              Success) echo "redeployed"; exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation --command-id "$command" \
+                  --instance-id "$instance" --query 'StandardErrorContent' --output text
+                echo "redeploy $status" >&2
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "redeploy did not finish in ten minutes" >&2
+          exit 1

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from gtochess.config import Settings, get_settings
 from gtochess.domain.games import GameRecord
-from gtochess.ingest.lichess import LichessClient
+from gtochess.ingest.lichess import LichessClient, LichessError
 from gtochess.ingest.parse import UnusableGame, parse_lichess_game
 from gtochess.ingest.repertoire import build_decision_nodes
 from gtochess.storage import Storage, as_storage
@@ -171,6 +171,15 @@ def ingest_player(
                     handle.flush()
                 if on_progress is not None:
                     on_progress(_progress(username, exported, games, skipped, limit, started))
+
+    # An export that yields nothing is a rate limit, an expired token, or a
+    # filter that matches no games, not a player who suddenly has no history.
+    # Committing it would replace a whole repertoire with an empty one.
+    if store is not None and not games and store.exists(games_name(username)):
+        raise LichessError(
+            f"the export returned no games for {username!r}; the games already "
+            "held have been left alone"
+        )
 
     elapsed = time.monotonic() - started
     if on_progress is not None:

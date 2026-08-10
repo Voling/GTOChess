@@ -211,3 +211,35 @@ class TestSelection:
         assert isinstance(chosen, CloudStorage)
         assert chosen.bucket == "fifty"
         assert chosen.key_for("a.json") == "prod/a.json"
+
+
+class TestWritesAreAtomic:
+    def test_a_failed_run_leaves_the_old_record(self, tmp_path: Path) -> None:
+        # The failure this guards: an export dying partway used to truncate a
+        # 28,000 game history to nothing before the first game arrived.
+        store = LocalStorage(tmp_path)
+        store.write("games.jsonl", "one\ntwo\nthree\n")
+        with pytest.raises(RuntimeError), store.writer("games.jsonl") as handle:
+            handle.write("partial\n")
+            raise RuntimeError("rate limited")
+        assert store.read("games.jsonl") == "one\ntwo\nthree\n"
+
+    def test_a_successful_run_replaces_it(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        store.write("games.jsonl", "stale\n")
+        with store.writer("games.jsonl") as handle:
+            handle.write("fresh\n")
+        assert store.read("games.jsonl") == "fresh\n"
+
+    def test_it_leaves_no_scratch_behind(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        with store.writer("games.jsonl") as handle:
+            handle.write("x\n")
+        assert [p.name for p in tmp_path.iterdir()] == ["games.jsonl"]
+
+    def test_no_scratch_survives_a_failure_either(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        with pytest.raises(RuntimeError), store.writer("games.jsonl") as handle:
+            handle.write("x\n")
+            raise RuntimeError("boom")
+        assert list(tmp_path.iterdir()) == []

@@ -24,6 +24,7 @@ from gtochess.api.auth import (
     AuthError,
     Principal,
     authorize,
+    get_limiter,
     guards,
     readable_player,
     status_for,
@@ -490,7 +491,8 @@ def player_graph(
 def read_explanation(username: str, digest: str) -> dict[str, Any]:
     settings = get_settings()
     provider = configured_provider(settings)
-    key = cache_key(digest, settings.pipeline_version, provider)
+    knowledge = KnowledgeStore(get_storage())
+    key = cache_key(digest, settings.pipeline_version, provider, knowledge=knowledge)
 
     cached = get_cache(settings.llm_cache_entries).get(key)
     if cached is None:
@@ -515,11 +517,16 @@ def write_explanation(
 ) -> Explanation:
     settings = get_settings()
     provider = configured_provider(settings)
-    key = cache_key(digest, settings.pipeline_version, provider)
+    knowledge = KnowledgeStore(get_storage())
+    key = cache_key(digest, settings.pipeline_version, provider, knowledge=knowledge)
     store = ExplanationStore(get_storage())
 
+    # SPENDER charged before this ran, so anything that returns without a model
+    # call gives it back. Otherwise a cache hit and a typo both cost a caller one
+    # of their ten analyses for the day.
     existing = get_cache(settings.llm_cache_entries).get(key) or store.get(key)
     if existing is not None:
+        get_limiter().refund(caller.subject)
         return existing
 
     graph = graph_for(
@@ -527,6 +534,7 @@ def write_explanation(
     )
     node = next((n for n in graph.nodes if n.digest == digest), None)
     if node is None:
+        get_limiter().refund(caller.subject)
         raise HTTPException(status_code=404, detail="position is not in this graph")
 
     try:
@@ -577,7 +585,7 @@ def write_explanation(
                 digest=digest,
                 study=study,
                 probe=probe,
-                knowledge=KnowledgeStore(get_storage()),
+                knowledge=knowledge,
             )
         except ProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc

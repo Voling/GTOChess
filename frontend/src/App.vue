@@ -36,6 +36,7 @@ import {
   signIn,
   signOut,
   signedIn,
+  whenSessionLost,
 } from "./auth";
 import AccountPanel from "./components/AccountPanel.vue";
 import SignIn from "./components/SignIn.vue";
@@ -216,6 +217,17 @@ async function load() {
     missing.value = exc instanceof GraphError && exc.status === 404;
     error.value = exc instanceof Error ? exc.message : String(exc);
     graph.value = null;
+    // Everything derived from the graph goes with it, or the sidebar keeps
+    // quoting the previous player's book depth under the new player's name and
+    // the mistake table keeps rows whose nodes no longer exist.
+    annotations.value = new Map();
+    annotationNote.value = null;
+    measuredMoves.value = 0;
+    mistakesOpen.value = false;
+    phase.value = null;
+    picks.value = [];
+    lineNodes.value = [];
+    cursor.value = -1;
   } finally {
     if (mine === request) loading.value = false;
   }
@@ -290,14 +302,21 @@ async function openAnalysis() {
 async function buildBoardAnalysis() {
   const digest = pinned.value;
   if (!digest || analysing.value) return;
+  // Generation guarded like the two calls above it: a build takes a model call
+  // and a run of searches, and pinning another node meanwhile must not have A's
+  // storyboard render against B's board.
+  const mine = ++explainRequest;
   analysing.value = true;
   analysisError.value = null;
   try {
-    analysis.value = await buildAnalysis(query.value, digest);
+    const built = await buildAnalysis(query.value, digest);
+    if (mine === explainRequest) analysis.value = built;
   } catch (exc) {
-    analysisError.value = exc instanceof Error ? exc.message : String(exc);
+    if (mine === explainRequest) {
+      analysisError.value = exc instanceof Error ? exc.message : String(exc);
+    }
   } finally {
-    analysing.value = false;
+    if (mine === explainRequest) analysing.value = false;
   }
 }
 
@@ -309,6 +328,7 @@ function scheduleExplain() {
   explaining.value = false;
   analysis.value = null;
   analysisError.value = null;
+  analysing.value = false;
 
   const digest = pinned.value;
   if (!digest) return;
@@ -352,28 +372,47 @@ async function connect() {
 }
 
 async function disconnect() {
-  await disconnectAuth();
-  authorizeUrl.value = null;
-  await refreshAuth();
+  authBusy.value = true;
+  authError.value = null;
+  try {
+    await disconnectAuth();
+    authorizeUrl.value = null;
+    await refreshAuth();
+  } catch (exc) {
+    // Every sibling handler wraps its call; without this the button looks inert
+    // and the panel keeps claiming a live connection.
+    authError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
+    authBusy.value = false;
+  }
 }
+
+let pollFailures = 0;
 
 async function pollImport(jobId: string) {
   try {
     const job = await fetchImportJob(jobId, username.value);
+    pollFailures = 0;
     importJob.value = job;
-    if (job.state === "queued" || job.state === "running") {
-      importPoll = window.setTimeout(() => pollImport(jobId), 2000);
+    if (job.state === "done" || job.state === "failed") {
+      if (job.state === "done") load();
       return;
     }
-    if (job.state === "failed") authError.value = job.error;
-    if (job.state === "done") {
-      tuned.clear();
-      minVolume.value = 2;
-      load();
+  } catch (exc) {
+    // Give up rather than asking forever. A restarted backend loses the job id,
+    // and with no ceiling this polls a 404 every four seconds while the bar sits
+    // frozen and nothing says why.
+    pollFailures += 1;
+    if (pollFailures >= 5) {
+      authError.value =
+        exc instanceof Error
+          ? `lost track of that import: ${exc.message}`
+          : String(exc);
+      importJob.value = null;
+      return;
     }
-  } catch {
-    importPoll = window.setTimeout(() => pollImport(jobId), 4000);
   }
+  importPoll = window.setTimeout(() => pollImport(jobId), 4000);
 }
 
 async function runImport() {
@@ -382,6 +421,9 @@ async function runImport() {
   try {
     const job = await startImport(username.value);
     importJob.value = job;
+    // One chain at a time, or two overwrite each other's progress.
+    window.clearTimeout(importPoll);
+    pollFailures = 0;
     importPoll = window.setTimeout(() => pollImport(job.job_id), 1500);
   } catch (exc) {
     authError.value = exc instanceof Error ? exc.message : String(exc);
@@ -390,7 +432,12 @@ async function runImport() {
   }
 }
 
+const LICHESS_CALLBACK = "/auth/lichess/callback";
+
 async function finishSignIn() {
+  // Cognito's callback carries ?code and ?state too, so the path is what tells
+  // these apart. Without it, a Cognito code would be offered to lichess.
+  if (window.location.pathname !== LICHESS_CALLBACK) return;
   const params = new URLSearchParams(window.location.search);
   const code = params.get("code");
   const state = params.get("state");
@@ -472,9 +519,13 @@ async function loadPhase() {
   }
 }
 
+const OWNS_ARROWS = 'input, textarea, select, button, a[href], [tabindex]:not([tabindex="-1"])';
+
 function onKey(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
-  if (target instanceof HTMLInputElement) return;
+  // Anything focusable keeps its own arrow behaviour, or a keyboard user cannot
+  // scroll the mistake table or the inspector: the graph steals every press.
+  if (target?.closest?.(OWNS_ARROWS)) return;
   if (event.key === "Escape" && accountOpen.value) {
     closeAccount();
     return;
@@ -643,6 +694,13 @@ watch(accountIn, (open) => {
 
 onMounted(() => {
   window.addEventListener("keydown", onKey);
+  // A refresh that fails drops the session. Without this the shell stays signed
+  // in and fires unauthenticated requests at a closed API forever.
+  whenSessionLost(() => {
+    accountIn.value = false;
+    accountEmail.value = null;
+    accountError.value = "That session expired. Sign in again.";
+  });
   openDoor();
 });
 

@@ -191,6 +191,18 @@ class SpendLimiter:
         key = (subject, self._today(now))
         self._spent[key] = self._spent.get(key, 0) + 1
 
+    def refund(self, subject: str, *, now: float | None = None) -> None:
+        """Gives a charge back when the work it paid for never happened.
+
+        The charge lands before the handler runs, so without this a request that
+        404s on an unknown position, or serves an already cached answer, still
+        costs one of the caller's analyses for the day.
+        """
+        key = (subject, self._today(now))
+        held = self._spent.get(key, 0)
+        if held > 0:
+            self._spent[key] = held - 1
+
     def forget(self) -> None:
         self._spent.clear()
 

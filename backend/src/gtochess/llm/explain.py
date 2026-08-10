@@ -97,8 +97,11 @@ def cache_key(
     pipeline_version: str,
     provider: ExplanationProvider,
     personal: PersonalContext | None = None,
+    knowledge: KnowledgeStore | None = None,
 ) -> str:
     key = f"{pipeline_version}:{provider.name}:{provider.model or 'none'}:{digest}"
+    if knowledge is not None:
+        key = f"{key}:{knowledge_stamp(knowledge)}"
     return key if personal is None else f"{key}:{personal.fingerprint()}"
 
 
@@ -147,6 +150,16 @@ def study_position(
         landscape=compute_landscape(board, report),
         attribution=attribution,
     )
+
+
+def knowledge_stamp(knowledge: KnowledgeStore | None) -> str:
+    """How much has been learned, folded into the cache key.
+
+    Principles are read live from the store, so an explanation generated when
+    three positions shared a plan would otherwise keep claiming three forever,
+    and a position studied after its explanation would never gain any.
+    """
+    return "k0" if knowledge is None else f"k{len(knowledge)}"
 
 
 def transferable(digest: str, knowledge: KnowledgeStore | None) -> list[Evidence]:

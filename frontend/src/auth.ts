@@ -28,13 +28,30 @@ export const CALLBACK_PATH = "/auth/callback";
 let config: AuthConfig | null = null;
 let session: Session | null = null;
 let renewal: Promise<string | null> | null = null;
+let onLost: (() => void) | null = null;
+
+// The app registers here so a refresh that fails puts the gate back rather than
+// leaving a signed in shell firing unauthenticated requests at a closed API.
+export function whenSessionLost(handler: () => void): void {
+  onLost = handler;
+}
+
+let loading: Promise<AuthConfig> | null = null;
 
 export async function loadConfig(): Promise<AuthConfig> {
   if (config) return config;
-  const response = await fetch("/api/auth/config");
-  if (!response.ok) throw new Error("could not read the sign in settings");
-  config = (await response.json()) as AuthConfig;
-  return config;
+  // The in-flight promise is cached, not only the result, or every concurrent
+  // caller issues its own request.
+  loading ??= fetch("/api/auth/config")
+    .then((response) => {
+      if (!response.ok) throw new Error("could not read the sign in settings");
+      return response.json() as Promise<AuthConfig>;
+    })
+    .then((found) => (config = found))
+    .finally(() => {
+      loading = null;
+    });
+  return loading;
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -70,9 +87,13 @@ function endpoint(path: string): string {
 // sessionStorage rather than localStorage: a token dies with the tab instead of
 // outliving it on a shared machine. The cost is signing in again per tab.
 function remember(next: Session | null): void {
+  const had = session !== null;
   session = next;
   if (next) sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
-  else sessionStorage.removeItem(SESSION_KEY);
+  else {
+    sessionStorage.removeItem(SESSION_KEY);
+    if (had) onLost?.();
+  }
 }
 
 function recall(): Session | null {
@@ -160,6 +181,12 @@ export async function completeSignIn(): Promise<boolean> {
   sessionStorage.removeItem(VERIFIER_KEY);
   sessionStorage.removeItem(STATE_KEY);
 
+  // Cognito reports a refusal on the query string rather than by failing the
+  // redirect, so this is the only place it can be seen.
+  const refused = params.get("error");
+  if (refused) {
+    throw new Error(params.get("error_description") ?? `sign in refused: ${refused}`);
+  }
   if (!code || !verifier) return true;
   if (!returned || returned !== expected) {
     throw new Error("that sign in did not start here");

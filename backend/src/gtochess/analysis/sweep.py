@@ -20,6 +20,8 @@ from gtochess.ingest.loss_store import LossStore
 
 TIERS = ((25, 28), (10, 24), (MIN_VOLUME, 20))
 FAILURE_STREAK = 25
+# Positions held before they are written back as one batch.
+FLUSH_EVERY = 25
 # Depth 20 everywhere. The tier depths above are inert while the ceiling sits
 # here, and only their volume floors still bite.
 MAX_DEPTH = 20
@@ -154,6 +156,7 @@ def run_sweep(
         initializer=_open_engine,
         initargs=(engine_path, threads, hash_mb),
     )
+    pending: list[PositionLosses] = []
     try:
         # chunksize 1 because a depth-28 position costs an order of magnitude more
         # than a depth-20 one, and chunking strands a worker on a run of them.
@@ -169,7 +172,14 @@ def run_sweep(
                     )
             else:
                 streak = 0
-                store.extend([record])
+                pending.append(record)
+                # Batched, because on object storage every extend is a read of
+                # the whole shared file and a put of it back. One call per
+                # position turns an N position sweep into N reads and N puts of
+                # a file that only grows.
+                if len(pending) >= FLUSH_EVERY:
+                    store.extend(pending)
+                    pending.clear()
             if on_progress and (done % report_every == 0 or done == len(items)):
                 on_progress(
                     SweepProgress(
@@ -184,6 +194,10 @@ def run_sweep(
         pool.terminate()
         raise
     finally:
+        # Measured positions are expensive, so whatever is still buffered lands
+        # even when the run ended badly.
+        if pending:
+            store.extend(pending)
         pool.join()
 
     return SweepResult(

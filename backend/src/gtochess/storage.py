@@ -106,10 +106,22 @@ class LocalStorage:
 
     @contextmanager
     def writer(self, name: str) -> Iterator[LineWriter]:
+        """Writes beside the record and renames onto it only on success.
+
+        Opening the real path with "w" truncates it before the first line
+        arrives, so an export that dies partway through leaves an empty file
+        where a whole history was. The rename is atomic on one filesystem, which
+        matches what CloudStorage already does by only putting on a clean exit.
+        """
         path = self.path_for(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            yield handle
+        scratch = path.with_name(f".{path.name}.partial")
+        try:
+            with scratch.open("w", encoding="utf-8") as handle:
+                yield handle
+            scratch.replace(path)
+        finally:
+            scratch.unlink(missing_ok=True)
 
     def delete(self, name: str) -> None:
         self.path_for(name).unlink(missing_ok=True)

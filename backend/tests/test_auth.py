@@ -173,3 +173,29 @@ class TestConfiguration:
     def test_the_spending_endpoints_are_closed_unless_opened(self) -> None:
         # The shipped default, not whatever a local .env turned off.
         assert Settings.model_fields["auth_required"].default is True
+
+
+class TestRefund:
+    def test_a_refund_returns_the_charge(self) -> None:
+        limiter = SpendLimiter(3)
+        limiter.charge("u1")
+        limiter.refund("u1")
+        assert limiter.remaining("u1") == 3
+
+    def test_it_reopens_a_spent_ceiling(self) -> None:
+        # A cache hit must not cost the caller their last analysis of the day.
+        limiter = SpendLimiter(1)
+        limiter.charge("u1")
+        limiter.refund("u1")
+        limiter.charge("u1")
+
+    def test_refunding_what_was_never_charged_does_not_go_negative(self) -> None:
+        limiter = SpendLimiter(2)
+        limiter.refund("u1")
+        assert limiter.remaining("u1") == 2
+
+    def test_one_account_cannot_refund_anothers_charge(self) -> None:
+        limiter = SpendLimiter(1)
+        limiter.charge("u1")
+        limiter.refund("u2")
+        assert limiter.remaining("u1") == 0

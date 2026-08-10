@@ -54,11 +54,11 @@ const eta = computed(() => {
       </dl>
 
       <template v-if="authorizeUrl">
-        <a class="primary" :href="authorizeUrl" target="_blank" rel="noopener noreferrer">
+        <a class="primary" :href="authorizeUrl">
           Authorize on lichess
         </a>
         <p class="note">
-          Opens lichess in a new tab. Approve there and you will land back here signed in.
+          Approve on lichess and you will land back here connected.
           GTO Chess never sees your password.
         </p>
       </template>

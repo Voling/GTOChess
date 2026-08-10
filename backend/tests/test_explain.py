@@ -491,10 +491,23 @@ class TestPlanPrinciples:
         )
         assert "only one move" in statement.statement
 
-    def test_the_count_is_of_all_neighbours_not_the_quoted_few(self) -> None:
-        others = [knowledge_of(str(i)) for i in range(9)]
+    def test_it_never_claims_more_than_it_measured(self) -> None:
+        # Stating a figure drawn from nine positions beside moves drawn from two
+        # is evidence that is false, and a claim citing it still passes ground().
+        others = [knowledge_of(str(i), best_san=f"M{i}") for i in range(9)]
         found = plan_principles(knowledge_of("a"), 2, others, limit=2)
-        assert "9 other studied positions" in found[0].statement
+        assert "2 other studied positions" in found[0].statement
+        assert "of 9 that do" in found[0].statement
+
+    def test_the_forcing_count_is_over_the_same_few(self) -> None:
+        others = [knowledge_of(str(i), is_single_answer=True) for i in range(9)]
+        found = plan_principles(knowledge_of("a"), 2, others, limit=2)
+        assert "In 2 of them" in next(e for e in found if e.id == "prin3").statement
+
+    def test_a_full_set_says_nothing_about_a_wider_one(self) -> None:
+        others = [knowledge_of(str(i), best_san=f"M{i}") for i in range(3)]
+        found = plan_principles(knowledge_of("a"), 2, others, limit=4)
+        assert "that do" not in found[0].statement
 
     def test_one_neighbour_reads_as_singular(self) -> None:
         found = plan_principles(knowledge_of("a"), 2, [knowledge_of("b")])

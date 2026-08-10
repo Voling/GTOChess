@@ -13,7 +13,7 @@ set -euo pipefail
 
 EMAIL="${1:-}"
 PROJECT="${PROJECT:-gtochess}"
-ENVIRONMENT="${ENVIRONMENT:-prod}"
+ENVIRONMENT="${ENVIRONMENT:-lite}"
 REGION="${REGION:-us-east-1}"
 
 if [ -z "$EMAIL" ]; then
@@ -29,10 +29,11 @@ if [ -z "$POOL" ] || [ "$POOL" = "None" ]; then
   exit 1
 fi
 
-# 32 bytes of urandom, filtered to a set the pool's policy accepts, then given
-# one of each required class so it cannot fail validation by chance.
-body="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
-PASSWORD="Aa1${body}"
+# Bounded read then a shell slice, rather than piping urandom into head: that
+# kills tr with SIGPIPE, and pipefail turns it into a failed script.
+body="$(LC_ALL=C head -c 256 /dev/urandom | tr -dc 'A-Za-z0-9')"
+# One of each required class up front, so a random draw cannot fail the policy.
+PASSWORD="Aa1${body:0:24}"
 
 aws cognito-idp admin-create-user \
   --region "$REGION" \

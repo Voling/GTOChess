@@ -110,6 +110,8 @@ const detail = (m: Mistake) =>
             :class="{ here: row.mark.child === pinned }"
             :title="detail(row)"
             tabindex="0"
+            role="button"
+            :aria-label="`${row.mark.san}, ${detail(row)}`"
             @click="emit('select', row.mark.child)"
             @keydown.enter.prevent="emit('select', row.mark.child)"
             @keydown.space.prevent="emit('select', row.mark.child)"

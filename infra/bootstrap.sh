@@ -15,7 +15,7 @@ set -euo pipefail
 # old name once the rename has happened.
 REPOS="${REPOS:-Voling/GTOChess}"
 PROJECT="${PROJECT:-gtochess}"
-ENVIRONMENT="${ENVIRONMENT:-prod}"
+ENVIRONMENT="${ENVIRONMENT:-lite}"
 # Not the CLI default: this has to match var.region in the stack.
 REGION="${REGION:-us-east-1}"
 
@@ -121,8 +121,13 @@ JSON
 )
 
 # --- deploy permissions -----------------------------------------------------
-# Everything deploy.yml does and nothing else: push one image, roll two
-# services, replace the site objects, forget the edge copy of index.html.
+# Everything deploy.yml does and nothing else: push one image, replace the
+# site objects, and tell the one tagged instance to redeploy itself.
+#
+# SendCommand is split in two because it authorises against every resource in
+# the request, and AWS-RunShellScript is an AWS-owned document with no tags.
+# A single statement carrying a tag condition would never match, and every
+# rollout would fail with AccessDenied after the image had already shipped.
 DEPLOY_POLICY=$(cat <<JSON
 {
   "Version": "2012-10-17",
@@ -144,15 +149,6 @@ DEPLOY_POLICY=$(cat <<JSON
       "Resource": "arn:aws:ecr:${REGION}:${ACCOUNT}:repository/${NAME}-backend"
     },
     {
-      "Sid": "RollServices",
-      "Effect": "Allow",
-      "Action": ["ecs:UpdateService", "ecs:DescribeServices"],
-      "Resource": [
-        "arn:aws:ecs:${REGION}:${ACCOUNT}:service/${NAME}/${NAME}-api",
-        "arn:aws:ecs:${REGION}:${ACCOUNT}:service/${NAME}/${NAME}-worker"
-      ]
-    },
-    {
       "Sid": "PublishSite",
       "Effect": "Allow",
       "Action": ["s3:PutObject", "s3:DeleteObject", "s3:GetObject"],
@@ -165,10 +161,31 @@ DEPLOY_POLICY=$(cat <<JSON
       "Resource": "arn:aws:s3:::${NAME}-site"
     },
     {
-      "Sid": "ForgetTheEdgeCopy",
+      "Sid": "FindTheInstance",
       "Effect": "Allow",
-      "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
-      "Resource": "arn:aws:cloudfront::${ACCOUNT}:distribution/*"
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunTheRedeployDocument",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ssm:${REGION}::document/AWS-RunShellScript"
+    },
+    {
+      "Sid": "OnThisStacksInstanceOnly",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ec2:${REGION}:${ACCOUNT}:instance/*",
+      "Condition": {
+        "StringEquals": { "ssm:resourceTag/Name": "${NAME}" }
+      }
+    },
+    {
+      "Sid": "WatchTheCommand",
+      "Effect": "Allow",
+      "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+      "Resource": "*"
     }
   ]
 }

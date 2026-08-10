@@ -331,18 +331,23 @@ def plan_principles(
     if not prefix:
         return []
 
+    # Every count below is of `kept`, never of `neighbours`. Stating a figure
+    # drawn from twelve positions beside moves drawn from four produces evidence
+    # that is literally false, and a model citing it still passes grounding.
     kept = sorted(neighbours, key=lambda r: (-r.depth, r.digest))[:limit]
     moves = _and_list(sorted({r.best_san for r in kept}))
-    others = len(neighbours)
+    others = len(kept)
     positions = "position" if others == 1 else "positions"
+    more = len(neighbours) - others
 
     evidence = [
         Evidence(
             id="prin1",
             kind=EvidenceKind.PRINCIPLE,
             statement=(
-                f"{others} other studied {positions} reach for the same idea, {prefix}. "
-                f"There the engine's move was {moves}."
+                f"{others} other studied {positions} reach for the same idea, {prefix}"
+                + (f", of {len(neighbours)} that do" if more else "")
+                + f". There the engine's move was {moves}."
             ),
         )
     ]
