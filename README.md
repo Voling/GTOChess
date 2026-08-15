@@ -7,11 +7,11 @@ chess.com games. Design notes are in [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEM
 
 ```
 backend/          Python service: ingest, analysis, engine, API
-frontend/         Vue client, served by nginx in the image
+frontend/         Vue client, built to static files
 docs/             design notes
-.kube/base/       Kubernetes manifests, applied with kustomize
+infra/lite/       the live stack: one instance, Terraform
+infra/terraform/  the ECS stack, for when load justifies it
 docker-compose.yml
-skaffold.yaml
 ```
 
 ## Stack
@@ -20,12 +20,12 @@ skaffold.yaml
 |---|---|
 | API | FastAPI, served by uvicorn |
 | Analysis | Stockfish over UCI, driven by python-chess |
-| Store | Postgres with pgvector |
-| Cache | Redis |
+| Store | JSONL records behind a `Storage` interface: S3, or a directory |
+| Shared state | Redis, for the spend ceiling and the OAuth handoff |
 | Jobs | Celery on Redis |
 | Models | Pydantic v2 |
 | Explanations | Claude, with a deterministic fallback |
-| Client | Vue 3, Vite, d3-hierarchy |
+| Client | Vue 3, Vite |
 
 Requires Python 3.12 or newer.
 
@@ -39,27 +39,12 @@ docker compose up --build
 curl localhost:8010/health
 ```
 
-Compose brings up the client on 5173, the API on 8010, Postgres on 5432 and Redis on
-6379. The client proxies `/api` to the API container, so the browser talks to one
-origin. The API port defaults to 8010 because 8000 is often taken; `GTOCHESS_API_PORT`
-and `GTOCHESS_WEB_PORT` override both.
+Compose brings up the API on 8010, a Celery worker, and Redis on 6379. The API port
+defaults to 8010 because 8000 is often taken; `GTOCHESS_API_PORT` overrides it. Run the
+client separately with `npm run dev`, which proxies `/api` to the API.
 
-## Running on Kubernetes
-
-```
-skaffold dev
-```
-
-Builds both images, applies `.kube/base` with kustomize, and forwards the client to
-5173 and the API to 8010. `skaffold run` deploys once without watching. The API reads
-its Anthropic key from a `gtochess-secrets` secret, which is optional:
-
-```
-kubectl create secret generic gtochess-secrets --from-literal=anthropic-api-key=<key>
-```
-
-Without it the API still answers; explanations fall back to the deterministic
-provider.
+Without an Anthropic key the API still answers; explanations fall back to the
+deterministic provider.
 
 ## Running the backend locally
 
@@ -99,8 +84,7 @@ POST /api/players/<username>/import        -> {"job_id": ...}
 GET  /api/imports/<job_id>                 -> progress, then the result
 ```
 
-A Celery worker consumes the queue. Compose and the Kubernetes manifests both run
-one; locally:
+A Celery worker consumes the queue. Compose and the live stack both run one; locally:
 
 ```
 cd backend

@@ -7,9 +7,10 @@ import time
 from urllib.parse import urlencode
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gtochess.config import Settings, get_settings
+from gtochess.shared import SharedState
 
 
 class StoredToken(BaseModel):
@@ -41,6 +42,29 @@ class PendingAuthorization(BaseModel):
     verifier: str
     redirect_uri: str
     created_at: int
+
+
+PENDING_PREFIX = "gtochess:oauth:lichess:"
+
+
+class PendingStore:
+    def __init__(self, state: SharedState, *, ttl_s: int) -> None:
+        self._state = state
+        self._ttl_s = ttl_s
+
+    def hold(self, pending: PendingAuthorization) -> None:
+        self._state.hold(
+            f"{PENDING_PREFIX}{pending.state}", pending.model_dump_json(), ttl_s=self._ttl_s
+        )
+
+    def take(self, state: str) -> PendingAuthorization | None:
+        held = self._state.take(f"{PENDING_PREFIX}{state}")
+        if held is None:
+            return None
+        try:
+            return PendingAuthorization.model_validate_json(held)
+        except ValidationError:
+            return None
 
 
 def _b64url(raw: bytes) -> str:

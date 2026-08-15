@@ -1,0 +1,188 @@
+#!/bin/bash
+# Brings the whole application up on one box: Caddy for TLS and the site, the
+# API, one Celery worker, and Redis as the queue between them.
+#
+# Nothing durable lives here. The stores are in S3 and the image is in ECR, so
+# replacing this instance is a restart rather than a loss.
+set -euxo pipefail
+
+dnf -y update
+dnf -y install docker
+systemctl enable --now docker
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+install -d /srv/gtochess /srv/site
+
+cat > /srv/gtochess/Caddyfile <<'CADDY'
+${domain_name} {
+	encode gzip
+
+	# The API first, so it wins over the static handler below.
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	# Everything else is the built frontend. try_files sends a deep link to the
+	# document that boots the app rather than to a 404.
+	handle {
+		root * /srv/site
+		try_files {path} /index.html
+		file_server
+
+		# Vite content hashes every asset, so they can be cached hard. index.html
+		# names the hashes, so it never can.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+}
+CADDY
+
+cat > /srv/gtochess/compose.yaml <<'COMPOSE'
+name: gtochess
+
+x-app: &app
+  image: ${image}
+  restart: unless-stopped
+  environment: &env
+    GTOCHESS_REDIS_URL: redis://redis:6379/0
+    GTOCHESS_S3_BUCKET: ${data_bucket}
+    GTOCHESS_ENGINE_PATH: /opt/stockfish/stockfish
+    GTOCHESS_ENGINE_HASH_MB: "${engine_hash_mb}"
+    GTOCHESS_AUTH_REQUIRED: "true"
+    GTOCHESS_COGNITO_USER_POOL_ID: ${cognito_pool}
+    GTOCHESS_COGNITO_CLIENT_ID: ${cognito_client}
+    GTOCHESS_COGNITO_DOMAIN: ${cognito_domain}
+    GTOCHESS_COGNITO_REGION: ${region}
+    GTOCHESS_ANALYSIS_DAILY_LIMIT: "${analysis_daily_limit}"
+    AWS_REGION: ${region}
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  # The queue between the API and the worker. Same box, separate process: a
+  # sweep has to outlive the request that asked for it.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly so a restart does not drop queued imports. noeviction because
+    # this is a queue: shedding under pressure would lose jobs silently.
+    command: >
+      redis-server --appendonly yes
+      --maxmemory 128mb --maxmemory-policy noeviction
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    <<: *app
+    environment:
+      <<: *env
+      ANTHROPIC_API_KEY: $${ANTHROPIC_API_KEY}
+    command:
+      - uvicorn
+      - gtochess.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+  worker:
+    <<: *app
+    environment:
+      <<: *env
+      ANTHROPIC_API_KEY: $${ANTHROPIC_API_KEY}
+    command:
+      - celery
+      - -A
+      - gtochess.jobs.app
+      - worker
+      - -Q
+      - default
+      - --loglevel=info
+      - --concurrency=${worker_concurrency}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ACME_AGREE: "true"
+    volumes:
+      - /srv/gtochess/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/site:/srv/site:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    # No depends_on: reverse_proxy resolves api at request time, so Caddy serves
+    # the site and answers 502 on /api/* until the application image exists.
+
+volumes:
+  redis:
+  caddy-data:
+  caddy-config:
+COMPOSE
+
+# The key never lands in the compose file or in terraform state.
+cat > /srv/gtochess/.env <<ENVFILE
+ANTHROPIC_API_KEY=$(aws secretsmanager get-secret-value \
+  --region ${region} --secret-id ${anthropic_secret} \
+  --query SecretString --output text 2>/dev/null || echo "")
+ENVFILE
+chmod 600 /srv/gtochess/.env
+
+# --exact-timestamps because the default comparison is size plus "is the source
+# newer", and index.html is always the same size while the local copy is always
+# the newer one, having been downloaded after S3 wrote it. Without this the one
+# file that must always update is the one that never does.
+aws s3 sync s3://${site_bucket} /srv/site --region ${region} --delete --exact-timestamps || true
+
+# Written before anything is pulled. A first boot happens before any image
+# exists in ECR, so the pull below is expected to fail, and a bootstrap that died
+# there would leave no way to finish the job afterwards.
+cat > /usr/local/bin/gtochess-redeploy <<'REDEPLOY'
+#!/bin/bash
+set -euxo pipefail
+aws ecr get-login-password --region ${region} |
+  docker login --username AWS --password-stdin ${registry}
+aws s3 sync s3://${site_bucket} /srv/site --region ${region} --delete --exact-timestamps
+
+# Re-read every time. The key is usually put into Secrets Manager after the
+# first apply, so the copy written at boot is empty, and rotating it later would
+# otherwise need the instance replaced.
+printf 'ANTHROPIC_API_KEY=%s
+' "$(aws secretsmanager get-secret-value   --region ${region} --secret-id ${anthropic_secret}   --query SecretString --output text 2>/dev/null || echo '')" > /srv/gtochess/.env
+chmod 600 /srv/gtochess/.env
+
+cd /srv/gtochess
+docker compose pull
+# --wait, or this returns 0 the moment the containers are created and reports a
+# crash loop as a successful deploy.
+docker compose up -d --wait --wait-timeout 180
+docker image prune -f
+REDEPLOY
+chmod +x /usr/local/bin/gtochess-redeploy
+
+aws ecr get-login-password --region ${region} |
+  docker login --username AWS --password-stdin ${registry}
+
+# Caddy and Redis come up regardless, so the domain answers and the queue is
+# ready. The application containers start on the first redeploy that finds an
+# image. An empty registry is the normal state of a fresh stack, not a failure.
+cd /srv/gtochess
+docker compose up -d redis caddy
+docker compose pull || echo "no application image yet; run gtochess-redeploy once one is pushed"
+docker compose up -d || true

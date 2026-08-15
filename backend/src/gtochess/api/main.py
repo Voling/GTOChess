@@ -48,7 +48,7 @@ from gtochess.ingest.explanation_store import ExplanationStore
 from gtochess.ingest.graph import GameWalk, prune_walk, walk_games
 from gtochess.ingest.knowledge_store import KnowledgeStore
 from gtochess.ingest.loss_store import LossStore
-from gtochess.ingest.oauth import LichessOAuth, OAuthError, PendingAuthorization
+from gtochess.ingest.oauth import LichessOAuth, OAuthError, PendingStore
 from gtochess.ingest.pipeline import games_name, player_key
 from gtochess.jobs.tasks import annotate_player, import_player, learn_positions
 from gtochess.llm.explain import (
@@ -67,12 +67,12 @@ from gtochess.llm.explain import (
 )
 from gtochess.llm.provider import ExplanationProvider, ProviderError
 from gtochess.llm.tools import EngineProbe
+from gtochess.shared import get_shared
 from gtochess.storage import StorageError, get_storage
 
 app = FastAPI(title="GTO Chess", version="0.1.0")
 
 DEFAULT_SIDE = Query(default=Side.WHITE)
-_pending: LruCache[PendingAuthorization] = LruCache(max_entries=16)
 
 app.add_middleware(
     CORSMiddleware,
@@ -313,6 +313,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "pipeline_version": settings.pipeline_version,
         "engine": engine,
+        "shared_state": get_shared().label,
         "llm": {
             "provider": settings.llm_provider,
             "model": settings.llm_model,
@@ -352,6 +353,10 @@ def lichess_auth_status(who: Principal = CALLER) -> dict[str, Any]:
     }
 
 
+def pending_store() -> PendingStore:
+    return PendingStore(get_shared(), ttl_s=get_settings().lichess_pending_ttl_s)
+
+
 @app.post("/api/auth/lichess/start")
 def lichess_auth_start() -> dict[str, str]:
     oauth = LichessOAuth.from_settings()
@@ -359,7 +364,7 @@ def lichess_auth_start() -> dict[str, str]:
         url, pending = oauth.start()
     finally:
         oauth.close()
-    _pending.put(pending.state, pending)
+    pending_store().hold(pending)
     return {"authorize_url": url, "state": pending.state}
 
 
@@ -367,7 +372,7 @@ def lichess_auth_start() -> dict[str, str]:
 def lichess_auth_callback(
     code: str = Query(...), state: str = Query(...), who: Principal = CALLER
 ) -> dict[str, Any]:
-    pending = _pending.get(state)
+    pending = pending_store().take(state)
     if pending is None:
         raise HTTPException(status_code=400, detail="that sign in attempt expired; start again")
 

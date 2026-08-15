@@ -1,6 +1,6 @@
-// Authorization code flow with PKCE against the Cognito hosted UI. The client
-// holds no secret, so the code verifier is what proves the callback belongs to
-// the browser that started the sign in.
+// Sign in against Cognito directly, so the form is ours rather than the hosted
+// page. The password goes from this browser to Cognito over TLS and never
+// reaches our own servers.
 
 export interface AuthConfig {
   required: boolean;
@@ -17,15 +17,12 @@ export interface Session {
 }
 
 const SESSION_KEY = "gtochess.session";
-const VERIFIER_KEY = "gtochess.verifier";
-const STATE_KEY = "gtochess.state";
 // Refresh this far before expiry, so a request never carries a token that dies
 // in flight.
 const RENEW_MARGIN_MS = 120_000;
 
-export const CALLBACK_PATH = "/auth/callback";
-
 let config: AuthConfig | null = null;
+let loading: Promise<AuthConfig> | null = null;
 let session: Session | null = null;
 let renewal: Promise<string | null> | null = null;
 let onLost: (() => void) | null = null;
@@ -35,8 +32,6 @@ let onLost: (() => void) | null = null;
 export function whenSessionLost(handler: () => void): void {
   onLost = handler;
 }
-
-let loading: Promise<AuthConfig> | null = null;
 
 export async function loadConfig(): Promise<AuthConfig> {
   if (config) return config;
@@ -52,36 +47,6 @@ export async function loadConfig(): Promise<AuthConfig> {
       loading = null;
     });
   return loading;
-}
-
-function base64url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function random(length = 64): string {
-  return base64url(crypto.getRandomValues(new Uint8Array(length)));
-}
-
-async function challenge(verifier: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier),
-  );
-  return base64url(new Uint8Array(digest));
-}
-
-function redirectUri(): string {
-  return `${window.location.origin}${CALLBACK_PATH}`;
-}
-
-function endpoint(path: string): string {
-  if (!config?.domain) throw new Error("no user pool is configured");
-  const host = config.domain.includes(".")
-    ? config.domain
-    : `${config.domain}.auth.${config.region}.amazoncognito.com`;
-  return `https://${host}${path}`;
 }
 
 // sessionStorage rather than localStorage: a token dies with the tab instead of
@@ -112,96 +77,85 @@ function recall(): Session | null {
 function emailFrom(idToken: string | undefined): string | null {
   if (!idToken) return null;
   try {
-    const body = idToken.split(".")[1];
-    const json = atob(body.replace(/-/g, "+").replace(/_/g, "/"));
-    const claims = JSON.parse(json) as { email?: string; "cognito:username"?: string };
+    const json = atob(idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"));
+    const claims = JSON.parse(json) as {
+      email?: string;
+      "cognito:username"?: string;
+    };
     return claims.email ?? claims["cognito:username"] ?? null;
   } catch {
     return null;
   }
 }
 
-interface TokenResponse {
-  access_token: string;
-  id_token?: string;
-  refresh_token?: string;
-  expires_in: number;
+interface AuthResult {
+  AccessToken: string;
+  IdToken?: string;
+  RefreshToken?: string;
+  ExpiresIn: number;
 }
 
-async function exchange(body: Record<string, string>): Promise<TokenResponse> {
-  const response = await fetch(endpoint("/oauth2/token"), {
+// Cognito's unauthenticated API: a plain JSON POST, no signing and no SDK.
+async function callCognito(target: string, body: unknown): Promise<Record<string, unknown>> {
+  const settings = await loadConfig();
+  const response = await fetch(`https://cognito-idp.${settings.region}.amazonaws.com/`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(body),
+    headers: {
+      "Content-Type": "application/x-amz-json-1.1",
+      "X-Amz-Target": `AWSCognitoIdentityProviderService.${target}`,
+    },
+    body: JSON.stringify(body),
   });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`the sign in could not be completed: ${detail}`);
+    throw new Error(readable(payload));
   }
-  return (await response.json()) as TokenResponse;
+  return payload;
 }
 
-function store(tokens: TokenResponse, fallbackRefresh: string | null): void {
+function readable(payload: Record<string, unknown>): string {
+  const kind = String(payload.__type ?? "").split("#").pop() ?? "";
+  switch (kind) {
+    case "NotAuthorizedException":
+    case "UserNotFoundException":
+      return "That email and password do not match an account.";
+    case "PasswordResetRequiredException":
+      return "That account needs a new password. Ask for a reset.";
+    case "UserNotConfirmedException":
+      return "That account has not been confirmed yet.";
+    case "TooManyRequestsException":
+    case "LimitExceededException":
+      return "Too many attempts. Wait a few minutes and try again.";
+    default:
+      return String(payload.message ?? "Could not sign in. Try again.");
+  }
+}
+
+function store(result: AuthResult, fallbackRefresh: string | null): void {
   remember({
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token ?? fallbackRefresh,
-    expiresAt: Date.now() + tokens.expires_in * 1000,
-    email: emailFrom(tokens.id_token) ?? recall()?.email ?? null,
+    accessToken: result.AccessToken,
+    refreshToken: result.RefreshToken ?? fallbackRefresh,
+    expiresAt: Date.now() + result.ExpiresIn * 1000,
+    email: emailFrom(result.IdToken) ?? recall()?.email ?? null,
   });
 }
 
-export async function signIn(): Promise<void> {
-  await loadConfig();
-  const verifier = random();
-  const state = random(16);
-  sessionStorage.setItem(VERIFIER_KEY, verifier);
-  sessionStorage.setItem(STATE_KEY, state);
-
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: config!.client_id ?? "",
-    redirect_uri: redirectUri(),
-    scope: "openid email profile",
-    state,
-    code_challenge: await challenge(verifier),
-    code_challenge_method: "S256",
+export async function signIn(email: string, password: string): Promise<void> {
+  const settings = await loadConfig();
+  const payload = await callCognito("InitiateAuth", {
+    AuthFlow: "USER_PASSWORD_AUTH",
+    ClientId: settings.client_id,
+    AuthParameters: { USERNAME: email.trim(), PASSWORD: password },
   });
-  window.location.assign(endpoint(`/oauth2/authorize?${params}`));
-}
 
-// Returns true when this load was a callback, so the caller knows to clean the
-// URL rather than leaving a spent code in the address bar.
-export async function completeSignIn(): Promise<boolean> {
-  if (window.location.pathname !== CALLBACK_PATH) return false;
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get("code");
-  const returned = params.get("state");
-  const verifier = sessionStorage.getItem(VERIFIER_KEY);
-  const expected = sessionStorage.getItem(STATE_KEY);
-  sessionStorage.removeItem(VERIFIER_KEY);
-  sessionStorage.removeItem(STATE_KEY);
-
-  // Cognito reports a refusal on the query string rather than by failing the
-  // redirect, so this is the only place it can be seen.
-  const refused = params.get("error");
-  if (refused) {
-    throw new Error(params.get("error_description") ?? `sign in refused: ${refused}`);
+  // An admin-created account can be issued needing a new password. Nothing
+  // here can set one, so say so rather than failing on a missing token.
+  if (payload.ChallengeName) {
+    throw new Error("That account needs its password set before it can be used.");
   }
-  if (!code || !verifier) return true;
-  if (!returned || returned !== expected) {
-    throw new Error("that sign in did not start here");
-  }
-
-  await loadConfig();
-  const tokens = await exchange({
-    grant_type: "authorization_code",
-    client_id: config!.client_id ?? "",
-    code,
-    redirect_uri: redirectUri(),
-    code_verifier: verifier,
-  });
-  store(tokens, null);
-  return true;
+  const result = payload.AuthenticationResult as AuthResult | undefined;
+  if (!result?.AccessToken) throw new Error("Cognito returned no token.");
+  store(result, null);
 }
 
 async function renew(held: Session): Promise<string | null> {
@@ -210,21 +164,23 @@ async function renew(held: Session): Promise<string | null> {
     return null;
   }
   try {
-    await loadConfig();
-    const tokens = await exchange({
-      grant_type: "refresh_token",
-      client_id: config!.client_id ?? "",
-      refresh_token: held.refreshToken,
+    const settings = await loadConfig();
+    const payload = await callCognito("InitiateAuth", {
+      AuthFlow: "REFRESH_TOKEN_AUTH",
+      ClientId: settings.client_id,
+      AuthParameters: { REFRESH_TOKEN: held.refreshToken },
     });
-    store(tokens, held.refreshToken);
-    return tokens.access_token;
+    const result = payload.AuthenticationResult as AuthResult | undefined;
+    if (!result?.AccessToken) throw new Error("no token");
+    store(result, held.refreshToken);
+    return result.AccessToken;
   } catch {
     remember(null);
     return null;
   }
 }
 
-// Concurrent callers share one refresh, so a burst of requests does not spend
+// Concurrent callers share one refresh so a burst of requests does not spend
 // the refresh token several times over.
 export async function accessToken(): Promise<string | null> {
   const held = recall();
@@ -246,20 +202,6 @@ export function signedIn(): boolean {
   return recall() !== null;
 }
 
-export function forget(): void {
+export function signOut(): void {
   remember(null);
-}
-
-export async function signOut(): Promise<void> {
-  remember(null);
-  await loadConfig();
-  if (!config?.domain) {
-    window.location.assign("/");
-    return;
-  }
-  const params = new URLSearchParams({
-    client_id: config.client_id ?? "",
-    logout_uri: `${window.location.origin}/`,
-  });
-  window.location.assign(endpoint(`/logout?${params}`));
 }

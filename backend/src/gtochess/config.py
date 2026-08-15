@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     lichess_timeout_s: float = 60.0
     lichess_max_retries: int = 4
     lichess_backoff_s: float = 60.0
+    lichess_pending_ttl_s: int = 600
 
     ingest_rated_only: bool = True
     ingest_perf_types: str | None = None

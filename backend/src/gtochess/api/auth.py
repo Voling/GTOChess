@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict
 
 from gtochess.config import Settings, get_settings
 from gtochess.domain.accounts import Account
+from gtochess.shared import MemoryState, SharedState, get_shared
+
+SPEND_PREFIX = "gtochess:spend:"
+SPEND_TTL_S = 2 * 86_400
 
 
 class AuthError(Exception):
@@ -168,28 +172,34 @@ class SpendLimiter:
     ceiling is per subject and per day.
     """
 
-    def __init__(self, per_day: int) -> None:
+    def __init__(self, per_day: int, state: SharedState | None = None) -> None:
         self._per_day = per_day
-        self._spent: dict[tuple[str, int], int] = {}
+        self._state = state if state is not None else MemoryState()
 
     @staticmethod
     def _today(now: float | None = None) -> int:
         return int((now if now is not None else time.time()) // 86_400)
 
+    def _key(self, subject: str, now: float | None) -> str:
+        return f"{SPEND_PREFIX}{subject}:{self._today(now)}"
+
+    def _refusal(self) -> AuthError:
+        return AuthError(
+            f"that account has started {self._per_day} analyses today, which is the daily ceiling"
+        )
+
     def remaining(self, subject: str, *, now: float | None = None) -> int:
         if self._per_day <= 0:
             return 0
-        used = self._spent.get((subject, self._today(now)), 0)
-        return max(0, self._per_day - used)
+        return max(0, self._per_day - self._state.count(self._key(subject, now)))
 
     def charge(self, subject: str, *, now: float | None = None) -> None:
-        if self.remaining(subject, now=now) <= 0:
-            raise AuthError(
-                f"that account has started {self._per_day} analyses today, "
-                "which is the daily ceiling"
-            )
-        key = (subject, self._today(now))
-        self._spent[key] = self._spent.get(key, 0) + 1
+        if self._per_day <= 0:
+            raise self._refusal()
+        key = self._key(subject, now)
+        if self._state.bump(key, ttl_s=SPEND_TTL_S) > self._per_day:
+            self._state.ease(key)
+            raise self._refusal()
 
     def refund(self, subject: str, *, now: float | None = None) -> None:
         """Gives a charge back when the work it paid for never happened.
@@ -198,13 +208,7 @@ class SpendLimiter:
         404s on an unknown position, or serves an already cached answer, still
         costs one of the caller's analyses for the day.
         """
-        key = (subject, self._today(now))
-        held = self._spent.get(key, 0)
-        if held > 0:
-            self._spent[key] = held - 1
-
-    def forget(self) -> None:
-        self._spent.clear()
+        self._state.ease(self._key(subject, now))
 
 
 _limiter: SpendLimiter | None = None
@@ -213,7 +217,7 @@ _limiter: SpendLimiter | None = None
 def get_limiter() -> SpendLimiter:
     global _limiter
     if _limiter is None:
-        _limiter = SpendLimiter(get_settings().analysis_daily_limit)
+        _limiter = SpendLimiter(get_settings().analysis_daily_limit, get_shared())
     return _limiter
 
 

@@ -159,6 +159,44 @@ export interface OpeningPhase {
   band_cp: number;
 }
 
+export interface MoveOutcome {
+  parent: string;
+  child: string;
+  uci: string;
+  san: string;
+  line: string;
+  quality: MoveQuality;
+  loss_cp: number;
+  best_san: string;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number;
+  points_lost: number;
+}
+
+export interface QualityOutcome {
+  quality: MoveQuality;
+  moves: number;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number;
+  mean_loss_cp: number;
+}
+
+export interface OutcomeReport {
+  by_quality: QualityOutcome[];
+  worst: MoveOutcome[];
+  moves_measured: number;
+  moves_unmeasured: number;
+  sound_score: number;
+  flawed_score: number;
+  score_gap: number;
+}
+
 export interface Claim {
   text: string;
   evidence_id: string;
@@ -334,6 +372,13 @@ export function fetchOpeningPhase(query: GraphQuery): Promise<OpeningPhase> {
   const user = encodeURIComponent(query.username);
   return get<OpeningPhase>(
     `/api/players/${user}/opening-phase?${shapeParams(query)}`,
+  );
+}
+
+export function fetchOutcomes(query: GraphQuery): Promise<OutcomeReport> {
+  const user = encodeURIComponent(query.username);
+  return get<OutcomeReport>(
+    `/api/players/${user}/outcomes?side=${encodeURIComponent(query.side)}`,
   );
 }
 

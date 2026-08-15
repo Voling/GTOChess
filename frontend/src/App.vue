@@ -13,6 +13,7 @@ import {
   fetchImportJob,
   GraphError,
   fetchOpeningPhase,
+  fetchOutcomes,
   startAuth,
   startImport,
   type Analysis,
@@ -23,6 +24,7 @@ import {
   type MoveAnnotation,
   type OpeningName,
   type OpeningPhase,
+  type OutcomeReport,
   type RepertoireGraph,
   type Side,
 } from "./api";
@@ -30,7 +32,6 @@ import { defaultPicks, MAX_PICKS, slotsFor } from "./families";
 import { ancestry, pathTo, placeRadial, walk, type PlacedNode } from "./layout";
 import {
   accessToken,
-  completeSignIn,
   currentEmail,
   loadConfig,
   signIn,
@@ -44,6 +45,7 @@ import FamilyLegend from "./components/FamilyLegend.vue";
 import Inspector from "./components/Inspector.vue";
 import AnalysisPane from "./components/AnalysisPane.vue";
 import MistakeTable, { type Mistake } from "./components/MistakeTable.vue";
+import OutcomePanel from "./components/OutcomePanel.vue";
 import RepertoireGraphView from "./components/RepertoireGraph.vue";
 import Segmented from "./components/Segmented.vue";
 import Stepper from "./components/Stepper.vue";
@@ -212,6 +214,7 @@ async function load() {
     annotationNote.value = null;
     loadAnnotations();
     loadPhase();
+    loadOutcomes();
   } catch (exc) {
     if (mine !== request) return;
     missing.value = exc instanceof GraphError && exc.status === 404;
@@ -225,6 +228,8 @@ async function load() {
     measuredMoves.value = 0;
     mistakesOpen.value = false;
     phase.value = null;
+    outcomes.value = null;
+    outcomesOpen.value = false;
     picks.value = [];
     lineNodes.value = [];
     cursor.value = -1;
@@ -519,6 +524,31 @@ async function loadPhase() {
   }
 }
 
+const outcomes = ref<OutcomeReport | null>(null);
+const outcomesOpen = ref(false);
+
+const outcomesReady = computed(
+  () => (outcomes.value?.moves_measured ?? 0) > 0,
+);
+
+async function loadOutcomes() {
+  try {
+    outcomes.value = await fetchOutcomes(query.value);
+  } catch {
+    outcomes.value = null;
+  }
+}
+
+function toggleMistakes() {
+  mistakesOpen.value = !mistakesOpen.value;
+  if (mistakesOpen.value) outcomesOpen.value = false;
+}
+
+function toggleOutcomes() {
+  outcomesOpen.value = !outcomesOpen.value;
+  if (outcomesOpen.value) mistakesOpen.value = false;
+}
+
 const OWNS_ARROWS = 'input, textarea, select, button, a[href], [tabindex]:not([tabindex="-1"])';
 
 function onKey(event: KeyboardEvent) {
@@ -642,20 +672,24 @@ const accountError = ref<string | null>(null);
 const accountConfigured = ref(false);
 const accountEmail = ref<string | null>(null);
 
-async function beginSignIn() {
+async function beginSignIn(email: string, password: string) {
   accountBusy.value = true;
   accountError.value = null;
   try {
-    await signIn();
+    await signIn(email, password);
+    accountEmail.value = currentEmail();
+    accountIn.value = true;
   } catch (exc) {
     accountError.value = exc instanceof Error ? exc.message : String(exc);
+  } finally {
     accountBusy.value = false;
   }
 }
 
-async function endSession() {
+function endSession() {
+  signOut();
   accountIn.value = false;
-  await signOut();
+  accountEmail.value = null;
 }
 
 async function openDoor() {
@@ -669,9 +703,6 @@ async function openDoor() {
       return;
     }
 
-    if (await completeSignIn()) {
-      window.history.replaceState({}, "", "/");
-    }
     // A stale refresh token reads as signed in until it is spent, so ask for a
     // live token rather than trusting what is in storage.
     accountIn.value = signedIn() && (await accessToken()) !== null;
@@ -720,7 +751,7 @@ onBeforeUnmount(() => {
       :busy="accountBusy"
       :error="accountError"
       :configured="accountConfigured"
-      @start="beginSignIn"
+      @submit="beginSignIn"
     />
 
     <template v-else-if="accountIn">
@@ -803,10 +834,24 @@ onBeforeUnmount(() => {
           class="note flaws"
           :class="{ on: mistakesOpen }"
           :disabled="mistakes.length === 0"
-          @click="mistakesOpen = !mistakesOpen"
+          @click="toggleMistakes"
         >
           {{ annotationNote }}
           <span v-if="mistakes.length" aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button
+          v-if="outcomesReady"
+          type="button"
+          class="note flaws"
+          :class="{ on: outcomesOpen }"
+          @click="toggleOutcomes"
+        >
+          <span v-if="outcomes && outcomes.score_gap > 0">
+            those flaws cost {{ (outcomes.score_gap * 100).toFixed(1) }} points
+            per 100 games
+          </span>
+          <span v-else>how the flagged moves actually turn out</span>
+          <span aria-hidden="true">&rsaquo;</span>
         </button>
       </div>
 
@@ -888,6 +933,17 @@ onBeforeUnmount(() => {
         class="mistakes-slot"
         @select="select"
         @close="mistakesOpen = false"
+      />
+    </Transition>
+
+    <Transition name="rise">
+      <OutcomePanel
+        v-if="outcomesOpen && outcomes && outcomesReady && !empty"
+        :report="outcomes"
+        :pinned="pinned"
+        class="outcomes-slot"
+        @select="select"
+        @close="outcomesOpen = false"
       />
     </Transition>
 
@@ -1074,7 +1130,8 @@ input:focus {
 }
 /* Clears the legend on the left and leaves the inspector's column free, so a
    row click has somewhere to land. */
-.mistakes-slot {
+.mistakes-slot,
+.outcomes-slot {
   position: absolute;
   left: 336px;
   bottom: 16px;
@@ -1205,7 +1262,8 @@ input:focus {
   .legend {
     display: none;
   }
-  .mistakes-slot {
+  .mistakes-slot,
+  .outcomes-slot {
     position: static;
     order: 4;
     width: auto;
